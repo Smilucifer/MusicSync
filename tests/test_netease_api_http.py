@@ -27,8 +27,12 @@ def test_login_status():
     assert login_data.get("code") == 200
 
 def test_search():
-    """Test /search endpoint."""
-    response = requests.get(f"{BASE_URL}/search", params={"keywords": "周杰伦", "limit": 5}, timeout=10)
+    """Test /search endpoint with POST (required when MUSIC_U cookie is set)."""
+    response = requests.post(
+        f"{BASE_URL}/search",
+        data={"keywords": "周杰伦", "limit": 5},
+        timeout=10,
+    )
     assert response.status_code == 200
     data = response.json()
     assert data.get("code") == 200
@@ -37,7 +41,11 @@ def test_search():
 
 def test_song_detail():
     """Test /song/detail endpoint."""
-    search_response = requests.get(f"{BASE_URL}/search", params={"keywords": "周杰伦", "limit": 1}, timeout=10)
+    search_response = requests.post(
+        f"{BASE_URL}/search",
+        data={"keywords": "周杰伦", "limit": 1},
+        timeout=10,
+    )
     search_data = search_response.json()
     assert search_data.get("code") == 200, f"Search failed: {search_data}"
     assert search_data["result"]["songs"], "Search returned no songs"

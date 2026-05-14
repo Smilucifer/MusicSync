@@ -1,6 +1,5 @@
 """NetEase Cloud Music API wrapper using NeteaseCloudMusicApi (Node.js) service."""
 import time
-import random
 from typing import Optional
 
 import requests
@@ -48,9 +47,11 @@ class NetEaseAPI:
                 },
                 timeout=self._timeout,
             )
+            response.raise_for_status()
             data = response.json()
-            if data.get("code") == 200:
-                profile = data.get("profile") or data.get("account", {})
+            login_data = data.get("data", data)
+            if login_data.get("code") == 200:
+                profile = login_data.get("profile") or login_data.get("account", {})
                 self.uid = profile.get("userId") or profile.get("id")
                 if self.uid:
                     self._ready = True
@@ -62,13 +63,18 @@ class NetEaseAPI:
     def _rate_limit(self):
         time.sleep(0.5)
 
-    def _request(self, path: str, **params) -> dict:
+    def _request(self, path: str, method: str = "GET", **params) -> dict:
         try:
-            response = self._session.get(
-                f"{self.base_url}{path}",
-                params=params,
-                timeout=self._timeout,
-            )
+            url = f"{self.base_url}{path}"
+            if method.upper() == "POST":
+                response = self._session.post(
+                    url, data=params, timeout=self._timeout,
+                )
+            else:
+                response = self._session.get(
+                    url, params=params, timeout=self._timeout,
+                )
+            response.raise_for_status()
             self._rate_limit()
             data = response.json()
             # Enhanced API wraps some responses in {"data": {...}}
@@ -127,6 +133,7 @@ class NetEaseAPI:
     def search(self, keyword: str, limit: int = 10) -> list[dict]:
         result = self._request(
             "/search",
+            method="POST",
             keywords=keyword,
             type="1",
             limit=str(limit),
