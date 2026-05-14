@@ -3,3 +3,5 @@
 __pycache__/
 *.pyc
 .superpowers/
+csv/cookies.csv
+.venv/

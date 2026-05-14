@@ -3,8 +3,8 @@ import os
 import sys
 import json
 import time
+import random
 from datetime import datetime, timezone
-from typing import Optional
 
 # Fix Windows console encoding for Unicode output
 if sys.platform == "win32":
@@ -14,11 +14,20 @@ from dotenv import load_dotenv
 
 from auth_manager import AuthManager
 from matcher import match_track, match_l1, match_l2
+from csv_database import (
+    load_mappings, lookup_by_ne, lookup_by_qq,
+    get_synced_ne_ids, get_pending_manual_ids, needs_match,
+    upsert_ne_track, upsert_qq_track,
+    record_match, record_unmatched, mark_synced,
+    promote_qq_row, get_qq_only_tracks,
+    save_mappings, get_csv_path,
+)
 
 load_dotenv()
 
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 FORCE_FULL_SYNC = os.getenv("FORCE_FULL_SYNC", "false").lower() == "true"
+REVERSE_BATCH = int(os.getenv("REVERSE_BATCH", "0"))  # per-run limit, 0=unlimited
 
 
 def load_state() -> dict:
@@ -101,16 +110,15 @@ def main():
     if not state or FORCE_FULL_SYNC:
         print("  Fresh state (first run or force_full_sync)")
         state = init_fresh_state()
-    else:
-        print(f"  Last sync: {state.get('last_sync', 'unknown')}")
-        ne_count = len(state.get("netease", {}).get("tracks", []))
-        qq_count = len(state.get("qqmusic", {}).get("tracks", []))
-        print(f"  NetEase tracks in state: {ne_count}")
-        print(f"  QQ Music tracks in state: {qq_count}")
+
+    mappings = load_mappings()
+    row_count = sum(1 for k in mappings if k and not k.startswith("_"))
+    print(f"  Last sync: {state.get('last_sync', 'unknown')}")
+    print(f"  CSV rows: {row_count} (NetEase + QQ union)")
 
     is_first = is_first_run(state)
 
-    # --- Step 2: Fetch ---
+    # --- Step 2: Fetch & Update CSV ---
     print("\n[Step 2] Fetching liked tracks...")
 
     ne_tracks = ne_api.get_all_liked_tracks()
@@ -119,33 +127,60 @@ def main():
     qq_tracks = qq_api.get_all_liked_tracks()
     print(f"  QQ Music: {len(qq_tracks)} liked tracks")
 
+    # Update CSV with any new tracks from either platform
+    ne_new_csv = 0
+    for t in ne_tracks:
+        ne_id = str(t["id"])
+        if ne_id not in mappings:
+            upsert_ne_track(mappings, t)
+            ne_new_csv += 1
+
+    qq_new_csv = 0
+    for t in qq_tracks:
+        qq_id = str(t["id"])
+        if lookup_by_qq(mappings, qq_id) is None:
+            upsert_qq_track(mappings, t)
+            qq_new_csv += 1
+
+    if ne_new_csv or qq_new_csv:
+        print(f"  CSV new: +{ne_new_csv} NetEase, +{qq_new_csv} QQ-only")
+
     # --- Step 3: Diff ---
     print("\n[Step 3] Computing diff...")
 
-    # Tracks already synced (have qq_match_id in state)
-    already_synced_ids = {
-        t["id"] for t in state["netease"]["tracks"]
-        if t.get("qq_match_id")
+    already_synced_ids = get_synced_ne_ids(mappings)
+    pending_manual_ids = get_pending_manual_ids(mappings)
+
+    # Tracks that need processing: brand new + pending (matched but not yet executed)
+    needs_processing_ids = set()
+    for t in ne_tracks:
+        ne_id = str(t["id"])
+        if ne_id not in already_synced_ids:
+            needs_processing_ids.add(ne_id)
+
+    # Also include tracks needing first-time match
+    unmatched_ids = {
+        ne_id for ne_id, row in mappings.items()
+        if ne_id and not ne_id.startswith("_")
+        and needs_match(mappings, ne_id)
     }
+    needs_processing_ids |= unmatched_ids
 
-    # New tracks on NetEase (not in state or no match yet)
-    new_ne_tracks = [
-        t for t in ne_tracks
-        if t["id"] not in already_synced_ids
-    ]
+    new_ne_tracks = [t for t in ne_tracks if str(t["id"]) in needs_processing_ids]
 
-    print(f"  New/unsynced NetEase tracks: {len(new_ne_tracks)}")
-    print(f"  Already synced: {len(already_synced_ids)}")
+    print(f"  Tracks needing processing: {len(new_ne_tracks)}")
+    print(f"  Already synced (in CSV): {len(already_synced_ids)}")
+    print(f"  Pending (matched, not executed): {len(pending_manual_ids)}")
 
     if not new_ne_tracks:
         print("  Nothing to sync.")
         now = datetime.now(timezone.utc).isoformat()
         state["last_sync"] = now
         state["netease"]["last_fetch"] = now
-        state["netease"]["tracks"] = ne_tracks
         state["qqmusic"]["last_fetch"] = now
-        state["qqmusic"]["tracks"] = qq_tracks
         save_state(state)
+        if not DRY_RUN:
+            save_mappings(mappings)
         write_summary("## MusicSync Complete\nNo new tracks to sync.")
         auth.close()
         sys.exit(0)
@@ -153,36 +188,54 @@ def main():
     # --- Step 4: Match ---
     print("\n[Step 4] Matching tracks...")
 
-    matched_l1 = []
-    matched_l2 = []
+    qq_track_by_id = {t["id"]: t for t in qq_tracks}
+
+    matched_l1 = []     # (ne_track, qq_match, level) — manual + isrc → auto-execute
+    matched_l2 = []     # (ne_track, qq_match) — name_artist → dry-run only
     unmatched_new = []
 
     for ne_track in new_ne_tracks:
+        ne_id = str(ne_track["id"])
         qq_match = None
         level = ""
 
-        # Check if already in QQ Music liked tracks
-        for qq_t in qq_tracks:
-            if match_l1(ne_track, qq_t):
-                qq_match = qq_t
-                level = "L1"
-                break
-            if match_l2(ne_track, qq_t):
-                qq_match = qq_t
-                level = "L2"
-                break
+        # 1) Check CSV for manual mapping (highest priority)
+        csv_row = lookup_by_ne(mappings, ne_id)
+        if csv_row and csv_row.get("match_source") == "manual":
+            csv_qq_id = csv_row.get("qq_id", "")
+            if csv_qq_id:
+                qq_match = qq_track_by_id.get(csv_qq_id)
+                if qq_match:
+                    level = "manual"
+                else:
+                    qq_match = {"id": csv_qq_id}
+                    level = "manual"
+
+        # 2) L1/L2 against existing QQ liked tracks
+        if not qq_match:
+            for qq_t in qq_tracks:
+                if match_l1(ne_track, qq_t):
+                    qq_match = qq_t
+                    level = "isrc"
+                    break
+                if match_l2(ne_track, qq_t):
+                    qq_match = qq_t
+                    level = "name_artist"
+                    break
 
         if qq_match:
-            if level == "L1":
-                matched_l1.append((ne_track, qq_match))
+            if level in ("manual", "isrc"):
+                matched_l1.append((ne_track, qq_match, level))
             else:
                 matched_l2.append((ne_track, qq_match))
+            record_match(mappings, ne_id, qq_match, level)
             continue
 
-        # Search QQ Music
+        # 3) Search QQ Music
         results = qq_api.search(f"{ne_track['name']} {ne_track['artist']}", limit=3)
         if not results:
             unmatched_new.append(ne_track)
+            record_unmatched(mappings, ne_id)
             continue
 
         best_match = None
@@ -196,15 +249,21 @@ def main():
                     break
 
         if best_level:
+            level = "isrc" if best_level == "L1" else "name_artist"
             if best_level == "L1":
-                matched_l1.append((ne_track, best_match))
+                matched_l1.append((ne_track, best_match, level))
             else:
                 matched_l2.append((ne_track, best_match))
+            record_match(mappings, ne_id, best_match, level)
         else:
             unmatched_new.append(ne_track)
+            record_unmatched(mappings, ne_id)
 
-    print(f"  L1 matches (auto-execute): {len(matched_l1)}")
-    print(f"  L2 matches (dry-run preview): {len(matched_l2)}")
+    manual_count = sum(1 for m in matched_l1 if m[2] == "manual")
+    isrc_count = sum(1 for m in matched_l1 if m[2] == "isrc")
+    print(f"  Manual (from CSV): {manual_count}")
+    print(f"  ISRC (auto-execute): {isrc_count}")
+    print(f"  Name+Artist (dry-run): {len(matched_l2)}")
     print(f"  Unmatched: {len(unmatched_new)}")
 
     # --- Step 5: Execute ---
@@ -213,28 +272,30 @@ def main():
     executed_l1 = 0
     failed_l1 = []
 
-    for ne_track, qq_track in matched_l1:
+    for ne_track, qq_track, _level in matched_l1:
         track_name = f"{ne_track['name']} - {ne_track['artist']}"
+        ne_id = str(ne_track["id"])
 
         if DRY_RUN:
-            print(f"  [DRY-RUN] Would add: {track_name} → QQ {qq_track['id']}")
+            print(f"  [DRY-RUN] Would add ({_level}): {track_name} → QQ {qq_track['id']}")
             continue
 
         success = qq_api.add_to_liked(qq_track["id"])
         if success:
-            print(f"  OK: {track_name}")
+            print(f"  OK ({_level}): {track_name}")
+            mark_synced(mappings, ne_id)
             executed_l1 += 1
         else:
-            print(f"  FAIL: {track_name}")
+            print(f"  FAIL ({_level}): {track_name}")
             failed_l1.append(ne_track)
 
     # L2: dry-run only in MVP
     if matched_l2:
-        print(f"\n  --- L2 matches (DRY-RUN ONLY) ---")
+        print(f"\n  --- Name+Artist matches (DRY-RUN ONLY) ---")
         for ne_track, qq_track in matched_l2:
-            print(f"  [L2] {ne_track['name']} - {ne_track['artist']} → QQ {qq_track.get('name', '?')}")
+            print(f"  [name_artist] {ne_track['name']} - {ne_track['artist']} → QQ {qq_track.get('name', '?')}")
 
-    # Unmatched
+    # Unmatched — track attempts in state
     if unmatched_new:
         print(f"\n  --- Unmatched tracks ---")
         for ne_track in unmatched_new:
@@ -262,33 +323,134 @@ def main():
     if dead_count:
         print(f"  Marked {dead_count} unmatched tracks as dead (3+ failures)")
 
-    # --- Step 6: Save State ---
+    # --- Step 6: Save ---
     print("\n[Step 6] Saving state...")
     now = datetime.now(timezone.utc).isoformat()
     state["last_sync"] = now
     state["netease"]["last_fetch"] = now
-    state["netease"]["tracks"] = ne_tracks
     state["qqmusic"]["last_fetch"] = now
-    state["qqmusic"]["tracks"] = qq_tracks
-
-    for ne_track, qq_track in matched_l1:
-        for t in state["netease"]["tracks"]:
-            if t["id"] == ne_track["id"]:
-                t["qq_match_id"] = qq_track.get("id", "")
-                t["qq_match_confidence"] = "L1"
+    # Keep netease_id list for diff baseline
+    state["netease"]["tracks"] = [{"id": t["id"]} for t in ne_tracks]
+    state["qqmusic"]["tracks"] = [{"id": t["id"]} for t in qq_tracks]
 
     save_state(state)
 
+    # Write CSV only when not DRY_RUN (matches are confirmed)
+    if not DRY_RUN:
+        save_mappings(mappings)
+        print(f"  CSV saved: {get_csv_path()}")
+    else:
+        print(f"  CSV NOT saved (DRY_RUN — run with DRY_RUN=false to persist)")
+
+    # --- Step 7: Reverse sync (QQ → NetEase) ---
+    print("\n[Step 7] Reverse sync: QQ → NetEase...")
+    # Longer cooldown — NetEase search API aggressively rate-limits
+    time.sleep(30)
+
+    qq_only = get_qq_only_tracks(mappings)
+    rev_executed = 0
+    rev_failed = []
+    rev_matched_count = 0
+
+    print(f"  QQ-only tracks in CSV: {len(qq_only)}")
+
+    if not qq_only:
+        print("  No QQ-only tracks to process.")
+    else:
+        # Shuffle to avoid blocking on impossible matches every run
+        random.shuffle(qq_only)
+
+        if REVERSE_BATCH > 0 and len(qq_only) > REVERSE_BATCH:
+            print(f"  Limiting to {REVERSE_BATCH} tracks (REVERSE_BATCH set)")
+            qq_only = qq_only[:REVERSE_BATCH]
+
+        rev_matched = []   # (qq_key, ne_track, level)
+        rev_unmatched = []
+
+        for qq_key, qq_row in qq_only:
+            qq_name = qq_row.get("qq_name", qq_row.get("name", ""))
+            qq_artist = qq_row.get("qq_artist", qq_row.get("artist", ""))
+            qq_id = qq_row.get("qq_id", "")
+
+            # Build a qq_track dict for matcher
+            qq_track = {"id": qq_id, "name": qq_name, "artist": qq_artist}
+
+            ne_match = None
+            level = ""
+
+            # 1) Try L1/L2 against existing NetEase liked tracks
+            for ne_t in ne_tracks:
+                if match_l1(ne_t, qq_track):
+                    ne_match = ne_t
+                    level = "isrc"
+                    break
+                if match_l2(ne_t, qq_track):
+                    ne_match = ne_t
+                    level = "name_artist"
+                    break
+
+            # 2) Search NetEase if no match in liked tracks
+            if not ne_match:
+                time.sleep(5)  # rate-limit: avoid 405 errors
+                try:
+                    results = ne_api.search(f"{qq_name} {qq_artist}", limit=3)
+                    if results:
+                        best_match, best_level = match_track(qq_track, results)
+                        if best_level:
+                            ne_match = best_match
+                            level = "isrc" if best_level == "L1" else "name_artist"
+                except Exception:
+                    pass
+
+            if ne_match and level:
+                rev_matched.append((qq_key, ne_match, level))
+            else:
+                rev_unmatched.append((qq_key, qq_track))
+
+        isrc_count = sum(1 for m in rev_matched if m[2] == "isrc")
+        na_count = sum(1 for m in rev_matched if m[2] == "name_artist")
+        rev_matched_count = len(rev_matched)
+        print(f"  ISRC matches: {isrc_count}")
+        print(f"  Name+Artist matches: {na_count}")
+        print(f"  No match: {len(rev_unmatched)}")
+
+        # Execute reverse sync
+        for qq_key, ne_match, _level in rev_matched:
+            track_name = f"{ne_match['name']} - {ne_match['artist']}"
+
+            if DRY_RUN:
+                print(f"  [DRY-RUN] Would add ({_level}): {track_name} → NetEase {ne_match['id']}")
+                continue
+
+            success = ne_api.add_to_liked(ne_match["id"])
+            if success:
+                print(f"  OK ({_level}): {track_name}")
+                promote_qq_row(mappings, qq_key, ne_match, _level)
+                mark_synced(mappings, str(ne_match["id"]))
+                rev_executed += 1
+            else:
+                print(f"  FAIL ({_level}): {track_name}")
+                rev_failed.append(ne_match)
+
+        if rev_unmatched:
+            print(f"\n  --- Could not match on NetEase ---")
+            for qq_key, qq_track in rev_unmatched:
+                print(f"  [SKIP] {qq_track['name']} - {qq_track['artist']}")
+
+        if not DRY_RUN and rev_executed:
+            save_mappings(mappings)
+
     # --- Summary ---
+    csv_path = os.path.join(os.path.dirname(__file__), "..", "csv", "song_mappings.csv")
     summary = f"""## MusicSync {'DRY-RUN' if DRY_RUN else 'Complete'}
 **Time:** {now}
 **NetEase liked:** {len(ne_tracks)} tracks
 **QQ Music liked:** {len(qq_tracks)} tracks
-**L1 executed:** {executed_l1}
-**L1 failed:** {len(failed_l1)}
-**L2 (dry-run only):** {len(matched_l2)}
-**Unmatched:** {len(unmatched_new)}
+**Forward (Ne→QQ):** {executed_l1} executed / {len(failed_l1)} failed / {len(matched_l2)} dry-run / {len(unmatched_new)} unmatched
+**Reverse (QQ→Ne):** {rev_executed} executed / {len(rev_failed)} failed / {rev_matched_count} matched
 **Dead unmatched:** {dead_count}
+
+**CSV database:** `{csv_path}` — edit `match_source` to `manual` and fill `qq_id` to map unmatched tracks.
 """
     write_summary(summary)
 

@@ -1,5 +1,6 @@
 """NetEase Cloud Music API wrapper using MusicLibrary (pymusiclibrary)."""
 import time
+import random
 from typing import Optional
 
 from MusicLibrary.neteaseCloudMusicApi import NeteaseCloudMusicApi
