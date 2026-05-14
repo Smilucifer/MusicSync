@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-**本地 Windows 验证通过**，298/299 首网易云歌曲已同步到 QQ 音乐，反向同步也已验证。**GitHub Actions CI 被阻断** — `pymusiclibrary` 只有 Windows wheel，无法在 Ubuntu runner 上运行。解决方向见下方"待解决"。
+**本地 Windows 验证通过**，298/299 首网易云歌曲已同步到 QQ 音乐，反向同步也已验证。**GitHub Actions CI 可运行** — 已从 `pymusiclibrary`（仅 Windows）迁移至 NeteaseCloudMusicApiEnhanced（Node.js HTTP 服务），支持跨平台。
 
 ### CSV 数据库概况
 
@@ -57,22 +57,7 @@ netease_id | qq_id | name | artist | album | ne_name | ne_artist | qq_name | qq_
 
 ## 待解决
 
-### 🔴 阻断：GitHub Actions Ubuntu runner 无法运行
-
-`netease_api.py` 依赖 `MusicLibrary`（来自 `pymusiclibrary`），这是一个 C 绑定的原生库，**只发布 Windows wheel**（`cp314-abi3-win_amd64`）。GitHub Actions 使用 `ubuntu-latest`，加载 `libengine.so` 时报：
-
-```
-OSError: libengine.so: cannot open shared object file: No such file or directory
-```
-
-**解决方向**（按推荐顺序）：
-
-1. **换回 `pyncm`**（推荐）：纯 Python 实现，跨平台。PyPI 上有包（`pip install pyncm`，最新 1.6.8.4.2）。需重写 `netease_api.py` 用 `pyncm` API 替换 `MusicLibrary`。
-2. **改用 `pyncm-async`**：pyncm 的异步变体，同样跨平台。
-3. **自建 Windows runner**：如果坚持用 MusicLibrary，需要 Windows self-hosted runner（成本高，不推荐）。
-4. **用 Docker 包装 Wine**：极不推荐，脆弱且慢。
-
-### 🟡 其他
+### 🟡 已知问题
 
 - **ISRC 匹配不可用**：`qqmusic-api-python` v0.6.0 不暴露 ISRC。曾测试过 `song.get_detail()` 的 `extras` 字段，无 ISRC 数据。
 - **反向同步限速**：网易云搜索 API 限流严格（短窗口 405 → cookie 标记 → IP 封禁 7-10 天）。CI 每次仅处理 25 首（`REVERSE_BATCH=25`），712 首约需 29 次运行（~14 天）。
@@ -112,17 +97,28 @@ cd MusicSync
 
 ## 本地开发
 
+### 环境要求
+
+- Python 3.11+
+- Node.js 18+（用于 NeteaseCloudMusicApi 服务）
+- npm（随 Node.js 一起安装）
+
+### 安装步骤
+
 ```bash
 # 创建虚拟环境
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# 安装依赖
+# 安装 Python 依赖
 pip install -r requirements.txt
 
 # 配置凭据
 cp .env.example .env
 # 编辑 .env 填入真实凭据
+
+# 启动网易云 API 服务（需要 Node.js）
+bash scripts/start_netease_api.sh
 
 # 干运行预览
 DRY_RUN=true python scripts/sync.py
@@ -134,6 +130,24 @@ DRY_RUN=false python scripts/sync.py
 DRY_RUN=false REVERSE_BATCH=5 python scripts/sync.py
 ```
 
+### 启动网易云 API 服务
+
+网易云 API 依赖 `NeteaseCloudMusicApiEnhanced`（Node.js 服务），需先启动：
+
+```bash
+bash scripts/start_netease_api.sh
+# 服务启动后监听 http://localhost:3000
+```
+
+或手动启动：
+
+```bash
+git clone https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced.git /tmp/netease-api
+cd /tmp/netease-api
+npm install
+node app.js &
+```
+
 ### 工具脚本
 
 ```bash
@@ -142,6 +156,9 @@ python scripts/resolve_unmatched.py
 
 # 测试 QQ 音乐 API 是否返回 ISRC
 python scripts/test_isrc.py
+
+# 测试网易云 API HTTP 接口（需先启动 Node.js 服务）
+python tests/test_netease_api_http.py
 
 # 从旧 JSON 状态迁移到 CSV
 python scripts/migrate_to_csv.py
@@ -154,7 +171,8 @@ MusicSync/
 ├── .github/workflows/sync.yml      # GitHub Actions 定时触发（Cache 持久化）
 ├── scripts/
 │   ├── sync.py                     # 主入口（8 步流水线）
-│   ├── netease_api.py              # 网易云 API（MusicLibrary 绑定，当前不可跨平台）
+│   ├── start_netease_api.sh        # 启动 NeteaseCloudMusicApi 服务
+│   ├── netease_api.py              # 网易云 API（HTTP 调用 Node.js 服务）
 │   ├── qqmusic_api_v2.py           # QQ 音乐 API（qqmusic-api-python 异步库）
 │   ├── auth_manager.py             # 认证管理
 │   ├── matcher.py                  # L1(ISRC) + L2(歌名+歌手) 匹配引擎
@@ -164,6 +182,8 @@ MusicSync/
 │   ├── test_isrc.py                # 探测 QQ API 是否暴露 ISRC
 │   ├── search_qq.py                # QQ 音乐命令行搜索工具
 │   └── bulk_search_qq.py           # QQ 音乐批量搜索
+├── tests/
+│   └── test_netease_api_http.py    # 网易云 API HTTP 接口测试
 ├── csv/song_mappings.csv           # 歌曲身份数据库（唯一真相源）
 ├── state/sync_state.json           # 同步元数据（GitHub Actions Cache 持久化）
 └── requirements.txt
@@ -172,7 +192,8 @@ MusicSync/
 ## 技术栈
 
 - **Python 3.11+**
-- **网易云**: `pymusiclibrary` (MusicLibrary C 绑定，仅 Windows)
+- **Node.js 18+**（用于网易云 API 服务）
+- **网易云**: NeteaseCloudMusicApiEnhanced (Node.js 服务) + Python HTTP 调用
 - **QQ 音乐**: `qqmusic-api-python` (异步，微信凭据认证)
 - **持久化**: CSV + GitHub Actions Cache v4（非 git push）
 - **调度**: GitHub Actions workflow_dispatch + schedule (cron)
