@@ -22,6 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -37,6 +42,15 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Start NeteaseCloudMusicApi service
+        run: |
+          git clone https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced.git /tmp/netease-api
+          cd /tmp/netease-api
+          npm install
+          node app.js &
+          sleep 10
+          curl -s http://localhost:3000/login/status || exit 1
 
       - name: Restore sync state
         id: restore-state
