@@ -1,0 +1,58 @@
+name: MusicSync
+
+on:
+  schedule:
+    - cron: '0 16,4 * * *'  # CST 0:00 and 12:00 (UTC 16:00 and 04:00)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        type: boolean
+        default: true
+        description: 'Preview changes without executing'
+      force_full_sync:
+        type: boolean
+        default: false
+        description: 'Force full re-sync (ignore cache state)'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore sync state
+        id: cache-state
+        uses: actions/cache@v4
+        with:
+          path: state/sync_state.json
+          key: sync-state-${{ github.run_id }}
+          restore-keys: |
+            sync-state-
+
+      - name: Run sync
+        env:
+          NETEASE_PHONE: ${{ secrets.NETEASE_PHONE }}
+          NETEASE_MD5_PASSWORD: ${{ secrets.NETEASE_MD5_PASSWORD }}
+          QQMUSIC_REFRESH_TOKEN: ${{ secrets.QQMUSIC_REFRESH_TOKEN }}
+          QQMUSIC_UIN: ${{ secrets.QQMUSIC_UIN }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+          FORCE_FULL_SYNC: ${{ github.event.inputs.force_full_sync || 'false' }}
+        run: python scripts/sync.py
