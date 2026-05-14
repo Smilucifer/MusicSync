@@ -1,42 +1,46 @@
 """Authentication manager for NetEase and QQ Music."""
 import os
-import httpx
 from dataclasses import dataclass
 from typing import Optional
 
 from netease_api import NetEaseAPI
+from qqmusic_api_v2 import QQMusicAPI
 
 
 @dataclass
 class AuthResult:
     success: bool
     error: str = ""
-    musickey: Optional[str] = None
-    uin: Optional[str] = None
 
 
 class AuthManager:
     """Manages authentication for both music platforms."""
 
     def __init__(self):
-        self.qq_refresh_token = os.getenv("QQMUSIC_REFRESH_TOKEN", "")
-        self.qq_uin = os.getenv("QQMUSIC_UIN", "")
         self._netease: Optional[NetEaseAPI] = None
-        self._qq_musickey: Optional[str] = None
+        self._qq: Optional[QQMusicAPI] = None
 
     # --- NetEase ---
 
     def netease_login(self) -> AuthResult:
-        """Login to NetEase via cellphone + MD5 password."""
+        """Authenticate NetEase via MUSIC_U cookie or phone login."""
+        music_u = os.getenv("NETEASE_MUSIC_U", "")
         phone = os.getenv("NETEASE_PHONE", "")
         md5_pw = os.getenv("NETEASE_MD5_PASSWORD", "")
-        if not phone or not md5_pw:
-            return AuthResult(False, "NETEASE_PHONE or NETEASE_MD5_PASSWORD not set")
+
+        if not music_u and (not phone or not md5_pw):
+            return AuthResult(False, "NETEASE_MUSIC_U or NETEASE_PHONE+NETEASE_MD5_PASSWORD not set")
 
         api = NetEaseAPI()
-        if not api.login(phone, md5_pw):
-            api.close()
-            return AuthResult(False, "NetEase login failed")
+
+        if music_u:
+            if not api.auth_with_cookie(music_u):
+                api.close()
+                return AuthResult(False, "NetEase cookie auth failed — MUSIC_U may be expired")
+        else:
+            if not api.login(phone, md5_pw):
+                api.close()
+                return AuthResult(False, "NetEase login failed (captcha may be required)")
 
         self._netease = api
         return AuthResult(True)
@@ -51,46 +55,22 @@ class AuthManager:
 
     # --- QQ Music ---
 
-    def qqmusic_refresh(self) -> AuthResult:
-        """Refresh QQ Music musickey via refresh_token."""
-        if not self.qq_refresh_token or not self.qq_uin:
-            return AuthResult(False, "QQMUSIC_REFRESH_TOKEN or QQMUSIC_UIN not set")
+    def qqmusic_login(self) -> AuthResult:
+        """Create QQ Music API instance using QQMUSIC_KEY + QQMUSIC_UIN + QQMUSIC_EUIN."""
+        api = QQMusicAPI()
+        if not api.ready:
+            return AuthResult(False, "QQMUSIC_KEY, QQMUSIC_UIN, or QQMUSIC_EUIN not set")
 
-        try:
-            resp = httpx.post(
-                "https://y.qq.com/oauth2/refresh_token",
-                data={
-                    "grant_type": "refresh_token",
-                    "refresh_token": self.qq_refresh_token,
-                    "uin": self.qq_uin,
-                },
-                timeout=30,
-            )
-            if resp.status_code != 200:
-                return AuthResult(
-                    False, f"QQ token refresh HTTP {resp.status_code}"
-                )
+        self._qq = api
+        return AuthResult(True)
 
-            data = resp.json()
-            musickey = data.get("musickey") or data.get("access_token")
-            if not musickey:
-                return AuthResult(
-                    False,
-                    f"No musickey in response",
-                )
-
-            self._qq_musickey = musickey
-            return AuthResult(True, musickey=musickey, uin=self.qq_uin)
-        except Exception as e:
-            return AuthResult(False, f"QQ token refresh exception: {e}")
-
-    def get_qq_credentials(self):
-        """Get (musickey, uin), refreshing if needed."""
-        if not self._qq_musickey:
-            result = self.qqmusic_refresh()
+    def get_qq_api(self) -> Optional[QQMusicAPI]:
+        """Get QQ Music API instance, logging in if needed."""
+        if not self._qq:
+            result = self.qqmusic_login()
             if not result.success:
-                return None, None
-        return self._qq_musickey, self.qq_uin
+                return None
+        return self._qq
 
     # --- Pre-check ---
 
@@ -102,7 +82,7 @@ class AuthManager:
         if not ne_result.success:
             errors.append(f"NetEase: {ne_result.error}")
 
-        qq_result = self.qqmusic_refresh()
+        qq_result = self.qqmusic_login()
         if not qq_result.success:
             errors.append(f"QQ Music: {qq_result.error}")
 

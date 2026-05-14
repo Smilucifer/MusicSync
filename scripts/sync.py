@@ -6,10 +6,13 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
+# Fix Windows console encoding for Unicode output
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 from dotenv import load_dotenv
 
 from auth_manager import AuthManager
-from qqmusic_api import QQMusicAPI
 from matcher import match_track, match_l1, match_l2
 
 load_dotenv()
@@ -86,14 +89,11 @@ def main():
         auth.close()
         sys.exit(1)
 
-    musickey, uin = auth.get_qq_credentials()
-    if not musickey:
-        print("  FAIL: QQ Music credentials not available")
+    qq_api = auth.get_qq_api()
+    if not qq_api:
+        print("  FAIL: QQ Music API not available after login")
         auth.close()
         sys.exit(1)
-
-    qq_api = QQMusicAPI()
-    qq_api.set_auth(musickey, uin)
 
     # --- Step 1: Load State ---
     print("\n[Step 1] Loading sync state...")
@@ -147,7 +147,6 @@ def main():
         state["qqmusic"]["tracks"] = qq_tracks
         save_state(state)
         write_summary("## MusicSync Complete\nNo new tracks to sync.")
-        qq_api.close()
         auth.close()
         sys.exit(0)
 
@@ -181,17 +180,26 @@ def main():
             continue
 
         # Search QQ Music
-        result = qq_api.search_track(ne_track["name"], ne_track["artist"])
-        if not result:
+        results = qq_api.search(f"{ne_track['name']} {ne_track['artist']}", limit=3)
+        if not results:
             unmatched_new.append(ne_track)
             continue
 
-        matched_result, matched_level = match_track(ne_track, [result])
-        if matched_level:
-            if matched_level == "L1":
-                matched_l1.append((ne_track, matched_result))
+        best_match = None
+        best_level = None
+        for result in results:
+            matched_result, matched_level = match_track(ne_track, [result])
+            if matched_level and (best_level is None or matched_level == "L1"):
+                best_match = matched_result
+                best_level = matched_level
+                if matched_level == "L1":
+                    break
+
+        if best_level:
+            if best_level == "L1":
+                matched_l1.append((ne_track, best_match))
             else:
-                matched_l2.append((ne_track, matched_result))
+                matched_l2.append((ne_track, best_match))
         else:
             unmatched_new.append(ne_track)
 
@@ -206,14 +214,13 @@ def main():
     failed_l1 = []
 
     for ne_track, qq_track in matched_l1:
-        songmid = qq_track.get("mid", "")
         track_name = f"{ne_track['name']} - {ne_track['artist']}"
 
         if DRY_RUN:
             print(f"  [DRY-RUN] Would add: {track_name} → QQ {qq_track['id']}")
             continue
 
-        success = qq_api.add_to_favorites(songmid)
+        success = qq_api.add_to_liked(qq_track["id"])
         if success:
             print(f"  OK: {track_name}")
             executed_l1 += 1
@@ -289,7 +296,6 @@ def main():
         print("\n*** FIRST RUN — DRY-RUN COMPLETE ***")
         print("Review the preview above. To execute, re-run with dry_run=false")
 
-    qq_api.close()
     auth.close()
     print("\nDone.")
 

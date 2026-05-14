@@ -1,0 +1,111 @@
+"""QQ Music API wrapper using qqmusic-api-python library."""
+import asyncio
+import os
+from typing import Optional
+
+from qqmusic_api import Client, Credential
+
+
+class QQMusicAPI:
+    """QQ Music liked-tracks operations via qqmusic-api-python."""
+
+    def __init__(self):
+        self.musickey = os.getenv("QQMUSIC_KEY", "")
+        self.musicid = int(os.getenv("QQMUSIC_UIN", "0"))
+        self.euin = os.getenv("QQMUSIC_EUIN", "")
+        self._ready = bool(self.musickey and self.musicid and self.euin)
+
+    @property
+    def ready(self) -> bool:
+        return self._ready
+
+    @property
+    def uid(self) -> Optional[int]:
+        return self.musicid if self._ready else None
+
+    # --- Sync wrappers ---
+
+    def get_all_liked_tracks(self) -> list[dict]:
+        if not self._ready:
+            return []
+        return asyncio.run(self._get_all_liked_async())
+
+    def search(self, keyword: str, limit: int = 10) -> list[dict]:
+        if not self._ready:
+            return []
+        return asyncio.run(self._search_async(keyword, limit))
+
+    def add_to_liked(self, track_id: str) -> bool:
+        if not self._ready:
+            return False
+        return asyncio.run(self._add_to_liked_async(int(track_id)))
+
+    def remove_from_liked(self, track_id: str) -> bool:
+        if not self._ready:
+            return False
+        return asyncio.run(self._del_from_liked_async(int(track_id)))
+
+    # --- Async implementations ---
+
+    async def _get_all_liked_async(self) -> list[dict]:
+        all_songs = []
+        page = 1
+        async with Client(credential=self._credential()) as client:
+            while True:
+                result = await client.user.get_fav_song(
+                    euin=self.euin, page=page, num=100,
+                )
+                songs = result.songs if hasattr(result, "songs") else []
+                if not songs:
+                    break
+
+                for song in songs:
+                    singer_name = song.singer[0].name if song.singer else ""
+                    all_songs.append({
+                        "id": str(song.id),
+                        "name": song.name,
+                        "artist": singer_name,
+                        "album": song.album.name if song.album else "",
+                        "mid": song.mid,
+                    })
+
+                if not result.hasmore:
+                    break
+                page += 1
+        return all_songs
+
+    async def _search_async(self, keyword: str, limit: int = 10) -> list[dict]:
+        async with Client(credential=self._credential()) as client:
+            result = await client.search.search_by_type(keyword=keyword, num=limit)
+            if not hasattr(result, "song") or not result.song:
+                return []
+            return [
+                {
+                    "id": str(song.id),
+                    "name": song.name,
+                    "artist": song.singer[0].name if song.singer else "",
+                    "album": song.album.name if song.album else "",
+                    "mid": song.mid,
+                }
+                for song in result.song
+            ]
+
+    async def _add_to_liked_async(self, song_id: int) -> bool:
+        async with Client(credential=self._credential()) as client:
+            return await client.songlist.add_songs(
+                dirid=201,
+                song_info=[(song_id, 1)],
+            )
+
+    async def _del_from_liked_async(self, song_id: int) -> bool:
+        async with Client(credential=self._credential()) as client:
+            return await client.songlist.del_songs(
+                dirid=201,
+                song_info=[(song_id, 1)],
+            )
+
+    def _credential(self) -> Credential:
+        return Credential(musicid=self.musicid, musickey=self.musickey)
+
+    def close(self):
+        pass

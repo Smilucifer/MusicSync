@@ -1,7 +1,7 @@
-"""NetEase Cloud Music weapi encryption implementation.
+"""NetEase Cloud Music weapi encryption.
 
-The weapi protocol encrypts JSON params with AES-128-CBC and RSA-encrypts the key.
-Reference: Binaryify/NeteaseCloudMusicApi (community-documented protocol).
+The weapi protocol: first AES with preset key, then AES with random key,
+then RSA-encrypt the random key. Reference: Binaryify/NeteaseCloudMusicApi.
 """
 import base64
 import json
@@ -9,11 +9,13 @@ import os
 import hashlib
 from Crypto.Cipher import AES, PKCS1_v1_5
 from Crypto.PublicKey import RSA
+from Crypto.Util.Padding import pad
 
-# Fixed AES IV for weapi
+# Fixed constants
 _AES_IV = b"0102030405060708"
+_PRESET_KEY = b"0CoJUm6Qyw8W8jud"
 
-# NetEase weapi RSA public key (extracted from the web player, well-known constant)
+# NetEase weapi RSA public key (well-known constant from web player)
 _RSA_PUB_KEY = RSA.construct((
     int(
         "00e0b509f6259df8642dbc35662901477df22677ec152b5ff68ace615bb7b725"
@@ -28,34 +30,42 @@ _RSA_CIPHER = PKCS1_v1_5.new(_RSA_PUB_KEY)
 
 
 def _random_key() -> bytes:
-    """Generate a random 16-byte AES key using os.urandom."""
     return os.urandom(16)
 
 
-def weapi_encrypt(data: dict) -> dict[str, str]:
-    """Encrypt a dict of params into weapi form fields.
+def _aes_encrypt(data: bytes, key: bytes) -> bytes:
+    """AES-128-CBC encrypt with PKCS7 padding."""
+    cipher = AES.new(key, AES.MODE_CBC, _AES_IV)
+    return cipher.encrypt(pad(data, AES.block_size))
 
-    Returns {"params": "<base64>", "encSecKey": "<hex>"} ready for POST.
+
+def weapi_encrypt(data: dict) -> dict[str, str]:
+    """Encrypt params into weapi form fields.
+
+    Layer 1: AES encrypt JSON with preset key → base64 string
+    Layer 2: AES encrypt the base64 string with random key → base64 string
+    Then RSA-encrypt the reversed random key for encSecKey.
+
+    Returns {"params": "<base64>", "encSecKey": "<hex>"}.
     """
     payload = json.dumps(data, separators=(",", ":")).encode("utf-8")
-    # Pad to 16-byte boundary (PKCS7-style via zero-padding is what NetEase expects)
-    pad_len = 16 - len(payload) % 16
-    payload += bytes([pad_len]) * pad_len
 
-    key = _random_key()
-    cipher = AES.new(key, AES.MODE_CBC, _AES_IV)
-    encrypted = cipher.encrypt(payload)
+    # Layer 1: AES with preset key → base64
+    first = _aes_encrypt(payload, _PRESET_KEY)
+    first_b64 = base64.b64encode(first).decode("ascii")
 
-    params = base64.b64encode(encrypted).decode("ascii")
+    # Layer 2: AES encrypt the base64 string with random key → base64
+    secret_key = _random_key()
+    second = _aes_encrypt(first_b64.encode("utf-8"), secret_key)
 
-    # encSecKey: reverse the key, hex-encode, RSA encrypt, then hex the result
-    reversed_key = key[::-1]
-    enc_sec_key = _RSA_CIPHER.encrypt(reversed_key)
+    params = base64.b64encode(second).decode("ascii")
+
+    # RSA encrypt the reversed secret key
+    enc_sec_key = _RSA_CIPHER.encrypt(secret_key[::-1])
     enc_sec_key = enc_sec_key.hex()
 
     return {"params": params, "encSecKey": enc_sec_key}
 
 
 def md5(text: str) -> str:
-    """MD5 hash (used for password in NetEase login)."""
     return hashlib.md5(text.encode("utf-8")).hexdigest()

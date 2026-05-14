@@ -9,6 +9,9 @@ def clean_name(name: str) -> str:
     Removes parentheticals, normalizes fullwidth/halfwidth punctuation,
     collapses whitespace.
     """
+    if not name:
+        return ""
+    name = str(name)
     name = re.sub(r"\([^)]*\)", "", name)
     name = re.sub(r"\[[^\]]*\]", "", name)
     name = re.sub(r"（[^）]*）", "", name)
@@ -21,13 +24,15 @@ def clean_name(name: str) -> str:
 
 def clean_artist(artist: str) -> str:
     """Normalize artist name: lowercase, strip whitespace."""
-    return artist.strip().lower()
+    if not artist:
+        return ""
+    return str(artist).strip().lower()
 
 
 def match_l1(netease_track: dict, qq_track: dict) -> bool:
     """L1: ISRC exact match."""
-    ne_isrc = netease_track.get("isrc", "").strip().upper()
-    qq_isrc = qq_track.get("isrc", "").strip().upper()
+    ne_isrc = str(netease_track.get("isrc", "")).strip().upper()
+    qq_isrc = str(qq_track.get("isrc", "")).strip().upper()
     if ne_isrc and qq_isrc and ne_isrc == qq_isrc:
         return True
     return False

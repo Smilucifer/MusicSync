@@ -1,4 +1,4 @@
-"""Phase 0: Verify NetEase Cloud Music API connectivity via direct HTTP."""
+"""Phase 0: Verify NetEase Cloud Music API connectivity."""
 import os
 import sys
 from dotenv import load_dotenv
@@ -8,21 +8,30 @@ load_dotenv()
 
 
 def main():
-    phone = os.getenv("NETEASE_PHONE")
-    md5_password = os.getenv("NETEASE_MD5_PASSWORD")
-    if not phone or not md5_password:
-        print("FAIL: NETEASE_PHONE or NETEASE_MD5_PASSWORD not set in .env")
+    music_u = os.getenv("NETEASE_MUSIC_U", "")
+    phone = os.getenv("NETEASE_PHONE", "")
+    md5_password = os.getenv("NETEASE_MD5_PASSWORD", "")
+
+    if not music_u and (not phone or not md5_password):
+        print("FAIL: NETEASE_MUSIC_U or NETEASE_PHONE+NETEASE_MD5_PASSWORD must be set")
         sys.exit(1)
 
     api = NetEaseAPI()
 
-    # Step 1: Login
-    print("[1/4] Logging in via cellphone...")
-    if not api.login(phone, md5_password):
-        print("FAIL: Login failed — check phone number and MD5 password")
-        api.close()
-        sys.exit(1)
-    print(f"  OK: Login successful (uid={api.uid})")
+    # Step 1: Authenticate (prefer cookie, fallback to login)
+    print("[1/4] Authenticating...")
+    if music_u:
+        if not api.auth_with_cookie(music_u):
+            print("FAIL: Cookie authentication failed — MUSIC_U may be expired")
+            api.close()
+            sys.exit(1)
+        print(f"  OK: Cookie authenticated (uid={api.uid})")
+    else:
+        if not api.login(phone, md5_password):
+            print("FAIL: Login failed — check credentials or captcha required")
+            api.close()
+            sys.exit(1)
+        print(f"  OK: Login successful (uid={api.uid})")
 
     # Step 2: Fetch liked track IDs
     print("[2/4] Fetching liked track IDs...")

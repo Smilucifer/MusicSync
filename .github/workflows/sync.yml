@@ -49,10 +49,12 @@ jobs:
 
       - name: Run sync
         env:
+          NETEASE_MUSIC_U: ${{ secrets.NETEASE_MUSIC_U }}
           NETEASE_PHONE: ${{ secrets.NETEASE_PHONE }}
           NETEASE_MD5_PASSWORD: ${{ secrets.NETEASE_MD5_PASSWORD }}
-          QQMUSIC_REFRESH_TOKEN: ${{ secrets.QQMUSIC_REFRESH_TOKEN }}
+          QQMUSIC_KEY: ${{ secrets.QQMUSIC_KEY }}
           QQMUSIC_UIN: ${{ secrets.QQMUSIC_UIN }}
+          QQMUSIC_EUIN: ${{ secrets.QQMUSIC_EUIN }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
           FORCE_FULL_SYNC: ${{ github.event.inputs.force_full_sync || 'false' }}
         run: python scripts/sync.py
