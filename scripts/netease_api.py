@@ -1,60 +1,81 @@
-"""NetEase Cloud Music API wrapper using MusicLibrary (pymusiclibrary)."""
+"""NetEase Cloud Music API wrapper using NeteaseCloudMusicApi (Node.js) service."""
 import time
 import random
 from typing import Optional
 
-from MusicLibrary.neteaseCloudMusicApi import NeteaseCloudMusicApi
+import requests
 
 
 class NetEaseAPI:
-    """NetEase Cloud Music liked-tracks operations via MusicLibrary binding."""
+    """NetEase Cloud Music liked-tracks operations via HTTP API."""
 
-    def __init__(self):
-        self.api = NeteaseCloudMusicApi()
+    def __init__(self, base_url="http://localhost:3000"):
+        self.base_url = base_url
         self.uid: Optional[int] = None
         self._ready: bool = False
+        self._session = requests.Session()
+        self._timeout = 15
 
     def auth_with_cookie(self, music_u: str) -> bool:
         """Authenticate using a browser-exported MUSIC_U cookie."""
-        self.api.set_cookie({"MUSIC_U": music_u})
-        result = self.api.request("/login/status")
-        body = result.body if isinstance(result.body, dict) else {}
-
-        # Response structure: {"data": {"code": 200, "profile": {...}}}
-        inner = body.get("data", body)
-        if inner.get("code") == 200:
-            profile = inner.get("profile", {})
-            self.uid = profile.get("userId") or inner.get("account", {}).get("id")
-            if self.uid:
-                self._ready = True
-                return True
-
+        self._session.cookies.set("MUSIC_U", music_u)
+        try:
+            response = self._session.get(
+                f"{self.base_url}/login/status", timeout=self._timeout
+            )
+            data = response.json()
+            # Enhanced API wraps login/status response in {"data": {...}}
+            login_data = data.get("data", data)
+            if login_data.get("code") == 200:
+                profile = login_data.get("profile", {})
+                self.uid = profile.get("userId")
+                if self.uid:
+                    self._ready = True
+                    return True
+        except Exception as e:
+            print(f"Auth failed: {e}")
         return False
 
     def login(self, phone: str, password_md5: str) -> bool:
         """Login via cellphone + MD5 password (may trigger captcha)."""
-        result = self.api.request(
-            "/login/cellphone",
-            phone=phone,
-            md5_password=password_md5,
-            countrycode="86",
-        )
-        body = result.body if isinstance(result.body, dict) else {}
-        if result.status != 200 or body.get("code") != 200:
-            return False
-
-        profile = body.get("profile") or body.get("account", {})
-        self.uid = profile.get("userId") or profile.get("id")
-        self._ready = True
-        return True
+        try:
+            response = self._session.get(
+                f"{self.base_url}/login/cellphone",
+                params={
+                    "phone": phone,
+                    "md5_password": password_md5,
+                    "countrycode": "86",
+                },
+                timeout=self._timeout,
+            )
+            data = response.json()
+            if data.get("code") == 200:
+                profile = data.get("profile") or data.get("account", {})
+                self.uid = profile.get("userId") or profile.get("id")
+                if self.uid:
+                    self._ready = True
+                    return True
+        except Exception as e:
+            print(f"Login failed: {e}")
+        return False
 
     def _rate_limit(self):
         time.sleep(0.5)
 
     def _request(self, path: str, **params) -> dict:
-        result = self.api.request(path, **params)
-        self._rate_limit()
-        return result.body if isinstance(result.body, dict) else {}
+        try:
+            response = self._session.get(
+                f"{self.base_url}{path}",
+                params=params,
+                timeout=self._timeout,
+            )
+            self._rate_limit()
+            data = response.json()
+            # Enhanced API wraps some responses in {"data": {...}}
+            return data.get("data", data)
+        except Exception as e:
+            print(f"Request failed: {e}")
+            return {}
 
     def get_liked_track_ids(self) -> list[int]:
         if not self.uid:
@@ -135,4 +156,4 @@ class NetEaseAPI:
         return result.get("code") == 200
 
     def close(self):
-        self.api.destroy()
+        self._session.close()
