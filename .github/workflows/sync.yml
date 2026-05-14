@@ -62,7 +62,7 @@ jobs:
           QQMUSIC_KEY: ${{ secrets.QQMUSIC_KEY }}
           QQMUSIC_UIN: ${{ secrets.QQMUSIC_UIN }}
           QQMUSIC_EUIN: ${{ secrets.QQMUSIC_EUIN }}
-          DRY_RUN: ${{ github.event.inputs.dry_run || (github.event_name == 'schedule' && 'false' || 'true') }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
           FORCE_FULL_SYNC: ${{ github.event.inputs.force_full_sync || 'false' }}
           REVERSE_BATCH: '25'
         run: python scripts/sync.py
