@@ -155,11 +155,11 @@ class NetEaseAPI:
         ]
 
     def add_to_liked(self, track_id: str) -> bool:
-        result = self._request("/like", id=track_id, like="true")
+        result = self._request("/like", method="POST", id=track_id, like="true")
         return result.get("code") == 200
 
     def remove_from_liked(self, track_id: str) -> bool:
-        result = self._request("/like", id=track_id, like="false")
+        result = self._request("/like", method="POST", id=track_id, like="false")
         return result.get("code") == 200
 
     def close(self):
