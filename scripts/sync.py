@@ -440,6 +440,69 @@ def main():
         if not DRY_RUN and rev_executed:
             save_mappings(mappings)
 
+    # --- Step 8: Cleanup removed tracks ---
+    print("\n[Step 8] Cleanup: removing unliked tracks from the other platform...")
+
+    # Get previous track IDs from state
+    prev_ne_ids = {t["id"] for t in state.get("netease", {}).get("tracks", [])}
+    prev_qq_ids = {t["id"] for t in state.get("qqmusic", {}).get("tracks", [])}
+
+    # Current track IDs
+    cur_ne_ids = {str(t["id"]) for t in ne_tracks}
+    cur_qq_ids = {str(t["id"]) for t in qq_tracks}
+
+    # Find removed tracks
+    removed_ne_ids = prev_ne_ids - cur_ne_ids
+    removed_qq_ids = prev_qq_ids - cur_qq_ids
+
+    print(f"  NetEase unliked: {len(removed_ne_ids)} tracks")
+    print(f"  QQ Music unliked: {len(removed_qq_ids)} tracks")
+
+    # Remove from QQ Music (tracks removed from NetEase)
+    ne_removed_executed = 0
+    ne_removed_failed = []
+    for ne_id in removed_ne_ids:
+        csv_row = lookup_by_ne(mappings, ne_id)
+        if csv_row and csv_row.get("qq_id"):
+            qq_id = csv_row["qq_id"]
+            track_name = f"{csv_row.get('name', ne_id)} - {csv_row.get('artist', '')}"
+
+            if DRY_RUN:
+                print(f"  [DRY-RUN] Would remove: {track_name} → QQ {qq_id}")
+                continue
+
+            success = qq_api.remove_from_liked(qq_id)
+            if success:
+                print(f"  OK removed: {track_name}")
+                ne_removed_executed += 1
+            else:
+                print(f"  FAIL remove: {track_name}")
+                ne_removed_failed.append(ne_id)
+
+    # Remove from NetEase (tracks removed from QQ Music)
+    qq_removed_executed = 0
+    qq_removed_failed = []
+    for qq_id in removed_qq_ids:
+        csv_row = lookup_by_qq(mappings, qq_id)
+        if csv_row and csv_row.get("netease_id"):
+            ne_id = csv_row["netease_id"]
+            track_name = f"{csv_row.get('name', qq_id)} - {csv_row.get('artist', '')}"
+
+            if DRY_RUN:
+                print(f"  [DRY-RUN] Would remove: {track_name} → NetEase {ne_id}")
+                continue
+
+            success = ne_api.remove_from_liked(ne_id)
+            if success:
+                print(f"  OK removed: {track_name}")
+                qq_removed_executed += 1
+            else:
+                print(f"  FAIL remove: {track_name}")
+                qq_removed_failed.append(qq_id)
+
+    print(f"  NetEase→QQ removed: {ne_removed_executed} executed / {len(ne_removed_failed)} failed")
+    print(f"  QQ→NetEase removed: {qq_removed_executed} executed / {len(qq_removed_failed)} failed")
+
     # --- Summary ---
     csv_path = os.path.join(os.path.dirname(__file__), "..", "csv", "song_mappings.csv")
     summary = f"""## MusicSync {'DRY-RUN' if DRY_RUN else 'Complete'}
