@@ -106,26 +106,30 @@ class QQMusicAPI:
                 song_info=[(song_id, 1)],
             )
 
-    async def _get_lyric_async(self, song_id: int) -> str:
-        """Fetch lyrics for a track. Returns plain text."""
+    async def _get_lyric_async(self, song_id: int) -> tuple[str, str]:
+        """Fetch lyrics for a track. Returns (original, translated) plain text."""
+        import re
+
+        def strip_lrc(raw: str) -> str:
+            if not raw:
+                return ""
+            lines = raw.splitlines()
+            clean = [re.sub(r"\[\d+:\d+\.\d+\]", "", line).strip() for line in lines]
+            return "\n".join(line for line in clean if line)
+
         async with Client(credential=self._credential()) as client:
             try:
-                result = await client.lyric.get_lyric(song_id)
-                raw = result.lyric if hasattr(result, "lyric") else ""
-                if not raw:
-                    return ""
-                # Strip LRC timestamps like [00:00.00]
-                import re
-                lines = raw.splitlines()
-                clean = [re.sub(r"\[\d+:\d+\.\d+\]", "", line).strip() for line in lines]
-                return "\n".join(line for line in clean if line)
+                result = await client.lyric.get_lyric(song_id, trans=True)
+                original = strip_lrc(result.lyric if hasattr(result, "lyric") else "")
+                translated = strip_lrc(result.trans if hasattr(result, "trans") else "")
+                return original, translated
             except Exception:
-                return ""
+                return "", ""
 
-    def get_lyric(self, track_id: str) -> str:
-        """Sync wrapper for lyrics fetching."""
+    def get_lyric(self, track_id: str) -> tuple[str, str]:
+        """Sync wrapper for lyrics fetching. Returns (original, translated)."""
         if not self._ready:
-            return ""
+            return "", ""
         return asyncio.run(self._get_lyric_async(int(track_id)))
 
     def _credential(self) -> Credential:

@@ -74,19 +74,42 @@ def match_l1(netease_track: dict, qq_track: dict) -> bool:
 def match_l2(netease_track: dict, qq_track: dict) -> bool:
     """L2: Lyrics similarity >= 0.6 AND duration within 3s.
 
-    Both tracks must have lyrics and duration for this to match.
+    Compares original lyrics AND translated lyrics.
+    Match succeeds if either comparison passes.
+    _lyrics format: (original_text, translated_text)
     """
-    ne_lyrics = normalize_lyrics(netease_track.get("_lyrics", ""))
-    qq_lyrics = normalize_lyrics(qq_track.get("_lyrics", ""))
+    ne_orig, ne_trans = netease_track.get("_lyrics", ("", ""))
+    qq_orig, qq_trans = qq_track.get("_lyrics", ("", ""))
+
     ne_dur = netease_track.get("duration", 0)
     qq_dur = qq_track.get("duration", 0)
 
-    if not ne_lyrics or not qq_lyrics:
-        return False
     if not duration_match(ne_dur, qq_dur):
         return False
-    if lyrics_similarity(ne_lyrics, qq_lyrics) >= 0.6:
-        return True
+
+    # Check original lyrics similarity
+    ne_orig_norm = normalize_lyrics(ne_orig)
+    qq_orig_norm = normalize_lyrics(qq_orig)
+    if ne_orig_norm and qq_orig_norm:
+        if lyrics_similarity(ne_orig_norm, qq_orig_norm) >= 0.6:
+            return True
+
+    # Check translated lyrics similarity
+    ne_trans_norm = normalize_lyrics(ne_trans)
+    qq_trans_norm = normalize_lyrics(qq_trans)
+    if ne_trans_norm and qq_trans_norm:
+        if lyrics_similarity(ne_trans_norm, qq_trans_norm) >= 0.6:
+            return True
+
+    # Cross-check: original vs translated (in case one platform has original, other has translation)
+    if ne_orig_norm and qq_trans_norm:
+        if lyrics_similarity(ne_orig_norm, qq_trans_norm) >= 0.6:
+            return True
+    if ne_trans_norm and qq_orig_norm:
+        if lyrics_similarity(ne_trans_norm, qq_orig_norm) >= 0.6:
+            return True
+
+    return False
     return False
 
 

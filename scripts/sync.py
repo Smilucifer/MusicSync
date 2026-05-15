@@ -67,30 +67,34 @@ def is_first_run(state: dict) -> bool:
     return not state.get("last_sync")
 
 
-def get_cached_lyrics(state: dict, track_id: str) -> str | None:
-    """Get lyrics from cache, or None if not cached."""
+def get_cached_lyrics(state: dict, track_id: str) -> tuple[str, str] | None:
+    """Get lyrics from cache, or None if not cached. Returns (original, translated)."""
     cache = state.get("lyrics_cache", {})
     if track_id in cache:
-        return cache[track_id]
+        entry = cache[track_id]
+        # Handle legacy string format
+        if isinstance(entry, str):
+            return entry, ""
+        return tuple(entry) if isinstance(entry, list) else entry
     return None
 
 
-def put_cached_lyrics(state: dict, track_id: str, lyrics: str):
-    """Cache lyrics, evicting oldest if over limit. Skips empty lyrics."""
-    if not lyrics:
+def put_cached_lyrics(state: dict, track_id: str, lyrics: tuple[str, str]):
+    """Cache lyrics, evicting oldest if over limit. Skips if both empty."""
+    original, translated = lyrics
+    if not original and not translated:
         return
     cache = state.setdefault("lyrics_cache", {})
     if track_id in cache:
         return
     if len(cache) >= LYRICS_CACHE_MAX:
-        # Evict oldest (first key inserted)
         oldest_key = next(iter(cache))
         del cache[oldest_key]
-    cache[track_id] = lyrics
+    cache[track_id] = list(lyrics)
 
 
-def fetch_lyrics_with_cache(state: dict, api, track_id: str) -> str:
-    """Fetch lyrics, using cache when available."""
+def fetch_lyrics_with_cache(state: dict, api, track_id: str) -> tuple[str, str]:
+    """Fetch lyrics, using cache when available. Returns (original, translated)."""
     cached = get_cached_lyrics(state, track_id)
     if cached is not None:
         return cached
@@ -308,13 +312,22 @@ def main():
                     qq_t = name_artist_candidates[0]
                     qq_lyrics = fetch_lyrics_with_cache(state, qq_api, str(qq_t["id"]))
                     from matcher import lyrics_similarity, duration_match, normalize_lyrics
-                    ne_norm = normalize_lyrics(ne_lyrics)
-                    qq_norm = normalize_lyrics(qq_lyrics)
-                    sim = lyrics_similarity(ne_lyrics, qq_lyrics)
+                    ne_orig, ne_trans = ne_lyrics
+                    qq_orig, qq_trans = qq_lyrics
+                    ne_o = normalize_lyrics(ne_orig)
+                    qq_o = normalize_lyrics(qq_orig)
+                    ne_t = normalize_lyrics(ne_trans)
+                    qq_t_norm = normalize_lyrics(qq_trans)
+                    sim_oo = lyrics_similarity(ne_o, qq_o)
+                    sim_tt = lyrics_similarity(ne_t, qq_t_norm)
+                    sim_ot = lyrics_similarity(ne_o, qq_t_norm)
+                    sim_to = lyrics_similarity(ne_t, qq_o)
                     dur_ok = duration_match(ne_dur, qq_t.get("duration", 0))
-                    print(f"  [L3] {ne_track['name']} - sim={sim:.3f} dur_ok={dur_ok}")
-                    print(f"    ne_lyrics({len(ne_norm)}): {ne_norm[:80]!r}")
-                    print(f"    qq_lyrics({len(qq_norm)}): {qq_norm[:80]!r}")
+                    print(f"  [L3] {ne_track['name']} - dur_ok={dur_ok} sim_oo={sim_oo:.3f} sim_tt={sim_tt:.3f} sim_ot={sim_ot:.3f} sim_to={sim_to:.3f}")
+                    print(f"    ne_orig({len(ne_o)}): {ne_o[:60]!r}")
+                    print(f"    qq_orig({len(qq_o)}): {qq_o[:60]!r}")
+                    print(f"    ne_trans({len(ne_t)}): {ne_t[:60]!r}")
+                    print(f"    qq_trans({len(qq_t_norm)}): {qq_t_norm[:60]!r}")
                 matched_l3.append((ne_track, name_artist_candidates[0]))
                 record_match(mappings, ne_id, name_artist_candidates[0], "name_artist")
         else:
