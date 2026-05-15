@@ -120,16 +120,49 @@ class QQMusicAPI:
         async with Client(credential=self._credential()) as client:
             try:
                 result = await client.lyric.get_lyric(song_id, trans=True)
-                # Always try decryption — some tracks have encrypted lyrics
-                # even when crypt field doesn't indicate it
                 crypt_val = getattr(result, "crypt", 0)
-                if crypt_val == 1:
-                    result = result.decrypt()
-                original = strip_lrc(result.lyric if hasattr(result, "lyric") else "")
-                translated = strip_lrc(result.trans if hasattr(result, "trans") else "")
-                # Debug: log crypt value for first few tracks
+                raw_lyric = result.lyric if hasattr(result, "lyric") else ""
+                raw_trans = result.trans if hasattr(result, "trans") else ""
+
+                # Always try to decrypt if lyrics look like hex (encrypted)
+                need_decrypt = crypt_val == 1
+                if not need_decrypt and raw_lyric:
+                    stripped = raw_lyric.replace("\n", "").replace(" ", "")
+                    if stripped and all(c in "0123456789abcdefABCDEF" for c in stripped) and len(stripped) > 20:
+                        need_decrypt = True
+
+                if need_decrypt:
+                    try:
+                        decrypted = result.decrypt()
+                        original = strip_lrc(decrypted.lyric if hasattr(decrypted, "lyric") else "")
+                        translated = strip_lrc(decrypted.trans if hasattr(decrypted, "trans") else "")
+                    except Exception:
+                        # Standard decrypt failed — try qrc=True parameter
+                        try:
+                            qrc_result = await client.lyric.get_lyric(song_id, qrc=True, trans=True)
+                            qrc_crypt = getattr(qrc_result, "crypt", 0)
+                            if qrc_crypt == 1:
+                                qrc_decrypted = qrc_result.decrypt()
+                                original = strip_lrc(qrc_decrypted.lyric if hasattr(qrc_decrypted, "lyric") else "")
+                                translated = strip_lrc(qrc_decrypted.trans if hasattr(qrc_decrypted, "trans") else "")
+                            else:
+                                original = strip_lrc(qrc_result.lyric if hasattr(qrc_result, "lyric") else "")
+                                translated = strip_lrc(qrc_result.trans if hasattr(qrc_result, "trans") else "")
+                        except Exception:
+                            # All decryption attempts failed — return empty
+                            # (L3 name+artist will be used as fallback)
+                            original = ""
+                            translated = ""
+                else:
+                    original = strip_lrc(raw_lyric)
+                    translated = strip_lrc(raw_trans)
+
+                # Debug: show crypt status for encrypted tracks
+                if need_decrypt:
+                    print(f"  [QQ] song={song_id} crypt={crypt_val} raw={raw_lyric[:50]!r} → orig={original[:50]!r}")
                 return original, translated
-            except Exception:
+            except Exception as e:
+                print(f"  [QQ] song={song_id} error: {e}")
                 return "", ""
 
     def get_lyric(self, track_id: str) -> tuple[str, str]:

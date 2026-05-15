@@ -110,7 +110,6 @@ def match_l2(netease_track: dict, qq_track: dict) -> bool:
             return True
 
     return False
-    return False
 
 
 def match_l3(netease_track: dict, qq_track: dict) -> bool:
