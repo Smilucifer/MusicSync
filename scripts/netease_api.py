@@ -112,6 +112,7 @@ class NetEaseAPI:
                            if song.get("ar") else ""),
                 "album": song.get("al", {}).get("name", ""),
                 "isrc": song.get("no", ""),
+                "duration": song.get("dt", 0) // 1000,
             }
             for song in songs
         ]
@@ -150,6 +151,7 @@ class NetEaseAPI:
                            if song.get("ar") else ""),
                 "album": song.get("al", {}).get("name", ""),
                 "isrc": song.get("no", ""),
+                "duration": song.get("dt", 0) // 1000,
             }
             for song in songs
         ]
@@ -161,6 +163,19 @@ class NetEaseAPI:
     def remove_from_liked(self, track_id: str) -> bool:
         result = self._request("/like", method="POST", id=track_id, like="false")
         return result.get("code") == 200
+
+    def get_lyric(self, track_id: str) -> str:
+        """Fetch lyrics for a track. Returns plain text (timestamps stripped)."""
+        result = self._request("/lyric", id=track_id)
+        lrc_data = result.get("lrc", {})
+        raw_lyric = lrc_data.get("lyric", "")
+        if not raw_lyric:
+            return ""
+        # Strip LRC timestamps like [00:00.00]
+        import re
+        lines = raw_lyric.splitlines()
+        clean_lines = [re.sub(r"\[\d+:\d+\.\d+\]", "", line).strip() for line in lines]
+        return "\n".join(line for line in clean_lines if line)
 
     def close(self):
         self._session.close()

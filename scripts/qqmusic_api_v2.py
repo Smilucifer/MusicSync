@@ -67,6 +67,7 @@ class QQMusicAPI:
                         "artist": singer_name,
                         "album": song.album.name if song.album else "",
                         "mid": song.mid,
+                        "duration": song.interval if hasattr(song, "interval") else 0,
                     })
 
                 if not result.hasmore:
@@ -86,6 +87,7 @@ class QQMusicAPI:
                     "artist": song.singer[0].name if song.singer else "",
                     "album": song.album.name if song.album else "",
                     "mid": song.mid,
+                    "duration": song.interval if hasattr(song, "interval") else 0,
                 }
                 for song in result.song
             ]
@@ -103,6 +105,28 @@ class QQMusicAPI:
                 dirid=201,
                 song_info=[(song_id, 1)],
             )
+
+    async def _get_lyric_async(self, song_id: int) -> str:
+        """Fetch lyrics for a track. Returns plain text."""
+        async with Client(credential=self._credential()) as client:
+            try:
+                result = await client.lyric.get_lyric(song_id)
+                raw = result.lyric if hasattr(result, "lyric") else ""
+                if not raw:
+                    return ""
+                # Strip LRC timestamps like [00:00.00]
+                import re
+                lines = raw.splitlines()
+                clean = [re.sub(r"\[\d+:\d+\.\d+\]", "", line).strip() for line in lines]
+                return "\n".join(line for line in clean if line)
+            except Exception:
+                return ""
+
+    def get_lyric(self, track_id: str) -> str:
+        """Sync wrapper for lyrics fetching."""
+        if not self._ready:
+            return ""
+        return asyncio.run(self._get_lyric_async(int(track_id)))
 
     def _credential(self) -> Credential:
         return Credential(musicid=self.musicid, musickey=self.musickey)

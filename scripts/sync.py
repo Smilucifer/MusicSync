@@ -13,7 +13,7 @@ if sys.platform == "win32":
 from dotenv import load_dotenv
 
 from auth_manager import AuthManager
-from matcher import match_track, match_l1, match_l2
+from matcher import match_track, match_l1, match_l2, match_l3
 from csv_database import (
     load_mappings, lookup_by_ne, lookup_by_qq,
     get_synced_ne_ids, get_pending_manual_ids, needs_match,
@@ -28,6 +28,7 @@ load_dotenv()
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 FORCE_FULL_SYNC = os.getenv("FORCE_FULL_SYNC", "false").lower() == "true"
 REVERSE_BATCH = int(os.getenv("REVERSE_BATCH", "0"))  # per-run limit, 0=unlimited
+LYRICS_CACHE_MAX = 1000
 
 
 def load_state() -> dict:
@@ -58,11 +59,40 @@ def init_fresh_state() -> dict:
         "qqmusic": {"last_fetch": None, "tracks": []},
         "unmatched": {},
         "tombstones": [],
+        "lyrics_cache": {},
     }
 
 
 def is_first_run(state: dict) -> bool:
     return not state.get("last_sync")
+
+
+def get_cached_lyrics(state: dict, track_id: str) -> str:
+    """Get lyrics from cache, or empty string if not cached."""
+    return state.get("lyrics_cache", {}).get(track_id, "")
+
+
+def put_cached_lyrics(state: dict, track_id: str, lyrics: str):
+    """Cache lyrics, evicting oldest if over limit."""
+    cache = state.setdefault("lyrics_cache", {})
+    if not lyrics or track_id in cache:
+        cache[track_id] = lyrics
+        return
+    if len(cache) >= LYRICS_CACHE_MAX:
+        # Evict oldest (first key inserted)
+        oldest_key = next(iter(cache))
+        del cache[oldest_key]
+    cache[track_id] = lyrics
+
+
+def fetch_lyrics_with_cache(state: dict, api, track_id: str) -> str:
+    """Fetch lyrics, using cache when available."""
+    cached = get_cached_lyrics(state, track_id)
+    if cached is not None:
+        return cached
+    lyrics = api.get_lyric(track_id)
+    put_cached_lyrics(state, track_id, lyrics)
+    return lyrics
 
 
 def write_summary(summary: str):
@@ -111,10 +141,14 @@ def main():
         print("  Fresh state (first run or force_full_sync)")
         state = init_fresh_state()
 
+    # Ensure lyrics_cache exists in older state files
+    state.setdefault("lyrics_cache", {})
+
     mappings = load_mappings()
     row_count = sum(1 for k in mappings if k and not k.startswith("_"))
     print(f"  Last sync: {state.get('last_sync', 'unknown')}")
     print(f"  CSV rows: {row_count} (NetEase + QQ union)")
+    print(f"  Lyrics cache: {len(state['lyrics_cache'])} entries")
 
     is_first = is_first_run(state)
 
@@ -191,8 +225,10 @@ def main():
     qq_track_by_id = {t["id"]: t for t in qq_tracks}
 
     matched_l1 = []     # (ne_track, qq_match, level) — manual + isrc → auto-execute
-    matched_l2 = []     # (ne_track, qq_match) — name_artist → dry-run only
+    matched_l2 = []     # (ne_track, qq_match, level) — lyrics+duration → auto-execute
+    matched_l3 = []     # (ne_track, qq_match) — name_artist → dry-run only
     unmatched_new = []
+    lyrics_fetched = 0
 
     for ne_track in new_ne_tracks:
         ne_id = str(ne_track["id"])
@@ -211,50 +247,61 @@ def main():
                     qq_match = {"id": csv_qq_id}
                     level = "manual"
 
-        # 2) L1/L2 against existing QQ liked tracks
+        # 2) L1 (ISRC) against existing QQ liked tracks
         if not qq_match:
             for qq_t in qq_tracks:
                 if match_l1(ne_track, qq_t):
                     qq_match = qq_t
                     level = "isrc"
                     break
-                if match_l2(ne_track, qq_t):
-                    qq_match = qq_t
-                    level = "name_artist"
-                    break
 
         if qq_match:
-            if level in ("manual", "isrc"):
-                matched_l1.append((ne_track, qq_match, level))
-            else:
-                matched_l2.append((ne_track, qq_match))
+            matched_l1.append((ne_track, qq_match, level))
             record_match(mappings, ne_id, qq_match, level)
             continue
 
-        # 3) Search QQ Music
-        results = qq_api.search(f"{ne_track['name']} {ne_track['artist']}", limit=3)
-        if not results:
-            unmatched_new.append(ne_track)
-            record_unmatched(mappings, ne_id)
-            continue
+        # 3) Name+Artist pre-filter against existing QQ liked tracks
+        name_artist_candidates = []
+        for qq_t in qq_tracks:
+            if match_l3(ne_track, qq_t):
+                name_artist_candidates.append(qq_t)
 
-        best_match = None
-        best_level = None
-        for result in results:
-            matched_result, matched_level = match_track(ne_track, [result])
-            if matched_level and (best_level is None or matched_level == "L1"):
-                best_match = matched_result
-                best_level = matched_level
-                if matched_level == "L1":
+        # 4) Search QQ Music if no local candidates
+        if not name_artist_candidates:
+            results = qq_api.search(f"{ne_track['name']} {ne_track['artist']}", limit=3)
+            if results:
+                for result in results:
+                    if match_l3(ne_track, result):
+                        name_artist_candidates.append(result)
+
+        # 5) Verify candidates with lyrics + duration
+        if name_artist_candidates:
+            ne_lyrics = fetch_lyrics_with_cache(state, ne_api, ne_id)
+            ne_dur = ne_track.get("duration", 0)
+            lyrics_fetched += 1
+
+            best_match = None
+            best_level = None
+            for qq_t in name_artist_candidates:
+                # Attach lyrics to candidate for match_l2
+                qq_lyrics = fetch_lyrics_with_cache(state, qq_api, str(qq_t["id"]))
+                qq_t["_lyrics"] = qq_lyrics
+                lyrics_fetched += 1
+                ne_track["_lyrics"] = ne_lyrics
+                ne_track["duration"] = ne_dur
+
+                if match_l2(ne_track, qq_t):
+                    best_match = qq_t
+                    best_level = "lyrics_duration"
                     break
 
-        if best_level:
-            level = "isrc" if best_level == "L1" else "name_artist"
-            if best_level == "L1":
-                matched_l1.append((ne_track, best_match, level))
+            if best_match:
+                matched_l2.append((ne_track, best_match, best_level))
+                record_match(mappings, ne_id, best_match, "name_artist")
             else:
-                matched_l2.append((ne_track, best_match))
-            record_match(mappings, ne_id, best_match, level)
+                # L3: name+artist only, dry-run
+                matched_l3.append((ne_track, name_artist_candidates[0]))
+                record_match(mappings, ne_id, name_artist_candidates[0], "name_artist")
         else:
             unmatched_new.append(ne_track)
             record_unmatched(mappings, ne_id)
@@ -263,8 +310,10 @@ def main():
     isrc_count = sum(1 for m in matched_l1 if m[2] == "isrc")
     print(f"  Manual (from CSV): {manual_count}")
     print(f"  ISRC (auto-execute): {isrc_count}")
-    print(f"  Name+Artist (dry-run): {len(matched_l2)}")
+    print(f"  Lyrics+Duration (auto-execute): {len(matched_l2)}")
+    print(f"  Name+Artist only (dry-run): {len(matched_l3)}")
     print(f"  Unmatched: {len(unmatched_new)}")
+    print(f"  Lyrics API calls: {lyrics_fetched}")
 
     # --- Step 5: Execute ---
     print(f"\n[Step 5] {'[DRY-RUN] ' if DRY_RUN else ''}Executing sync operations...")
@@ -272,6 +321,7 @@ def main():
     executed_l1 = 0
     failed_l1 = []
 
+    # L1: manual + ISRC → auto-execute
     for ne_track, qq_track, _level in matched_l1:
         track_name = f"{ne_track['name']} - {ne_track['artist']}"
         ne_id = str(ne_track["id"])
@@ -289,10 +339,30 @@ def main():
             print(f"  FAIL ({_level}): {track_name}")
             failed_l1.append(ne_track)
 
-    # L2: dry-run only in MVP
-    if matched_l2:
-        print(f"\n  --- Name+Artist matches (DRY-RUN ONLY) ---")
-        for ne_track, qq_track in matched_l2:
+    # L2: lyrics+duration → auto-execute
+    executed_l2 = 0
+    failed_l2 = []
+    for ne_track, qq_track, _level in matched_l2:
+        track_name = f"{ne_track['name']} - {ne_track['artist']}"
+        ne_id = str(ne_track["id"])
+
+        if DRY_RUN:
+            print(f"  [DRY-RUN] Would add ({_level}): {track_name} → QQ {qq_track['id']}")
+            continue
+
+        success = qq_api.add_to_liked(qq_track["id"])
+        if success:
+            print(f"  OK ({_level}): {track_name}")
+            mark_synced(mappings, ne_id)
+            executed_l2 += 1
+        else:
+            print(f"  FAIL ({_level}): {track_name}")
+            failed_l2.append(ne_track)
+
+    # L3: name+artist only → dry-run
+    if matched_l3:
+        print(f"\n  --- Name+Artist only matches (DRY-RUN ONLY) ---")
+        for ne_track, qq_track in matched_l3:
             print(f"  [name_artist] {ne_track['name']} - {ne_track['artist']} → QQ {qq_track.get('name', '?')}")
 
     # Unmatched — track attempts in state
@@ -378,15 +448,11 @@ def main():
             ne_match = None
             level = ""
 
-            # 1) Try L1/L2 against existing NetEase liked tracks
+            # 1) Try L1 against existing NetEase liked tracks
             for ne_t in ne_tracks:
                 if match_l1(ne_t, qq_track):
                     ne_match = ne_t
                     level = "isrc"
-                    break
-                if match_l2(ne_t, qq_track):
-                    ne_match = ne_t
-                    level = "name_artist"
                     break
 
             # 2) Search NetEase if no match in liked tracks
@@ -395,10 +461,29 @@ def main():
                 try:
                     results = ne_api.search(f"{qq_name} {qq_artist}", limit=3)
                     if results:
-                        best_match, best_level = match_track(qq_track, results)
-                        if best_level:
-                            ne_match = best_match
-                            level = "isrc" if best_level == "L1" else "name_artist"
+                        # Try L1 first
+                        for r in results:
+                            if match_l1(qq_track, r):
+                                ne_match = r
+                                level = "isrc"
+                                break
+                        # Then try lyrics+duration
+                        if not ne_match:
+                            qq_lyrics = fetch_lyrics_with_cache(state, qq_api, qq_id)
+                            qq_track["_lyrics"] = qq_lyrics
+                            for r in results:
+                                ne_lyrics = fetch_lyrics_with_cache(state, ne_api, str(r["id"]))
+                                r["_lyrics"] = ne_lyrics
+                                if match_l2(qq_track, r):
+                                    ne_match = r
+                                    level = "lyrics_duration"
+                                    break
+                        # Finally try name+artist
+                        if not ne_match:
+                            best, best_lv = match_track(qq_track, results)
+                            if best_lv:
+                                ne_match = best
+                                level = "name_artist"
                 except Exception:
                     pass
 
@@ -408,9 +493,11 @@ def main():
                 rev_unmatched.append((qq_key, qq_track))
 
         isrc_count = sum(1 for m in rev_matched if m[2] == "isrc")
+        ld_count = sum(1 for m in rev_matched if m[2] == "lyrics_duration")
         na_count = sum(1 for m in rev_matched if m[2] == "name_artist")
         rev_matched_count = len(rev_matched)
         print(f"  ISRC matches: {isrc_count}")
+        print(f"  Lyrics+Duration matches: {ld_count}")
         print(f"  Name+Artist matches: {na_count}")
         print(f"  No match: {len(rev_unmatched)}")
 
@@ -520,6 +607,7 @@ def main():
     state["qqmusic"]["tracks"] = [{"id": t["id"]} for t in qq_tracks]
     save_state(state)
     print(f"\n  State saved: {now}")
+    print(f"  Lyrics cache: {len(state['lyrics_cache'])} entries")
 
     # --- Summary ---
     csv_path = os.path.join(os.path.dirname(__file__), "..", "csv", "song_mappings.csv")
@@ -527,7 +615,7 @@ def main():
 **Time:** {now}
 **NetEase liked:** {len(ne_tracks)} tracks
 **QQ Music liked:** {len(qq_tracks)} tracks
-**Forward (Ne→QQ):** {executed_l1} executed / {len(failed_l1)} failed / {len(matched_l2)} dry-run / {len(unmatched_new)} unmatched
+**Forward (Ne→QQ):** {executed_l1 + executed_l2} executed ({isrc_count} ISRC + {len(matched_l2)} lyrics) / {len(failed_l1) + len(failed_l2)} failed / {len(matched_l3)} dry-run / {len(unmatched_new)} unmatched
 **Reverse (QQ→Ne):** {rev_executed} executed / {rev_skipped} already liked / {len(rev_failed)} failed / {rev_matched_count} matched
 **Unliked cleanup:** {ne_removed_executed} Ne→QQ / {qq_removed_executed} QQ→Ne
 **Dead unmatched:** {dead_count}
