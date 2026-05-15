@@ -30,13 +30,16 @@ def clean_artist(artist: str) -> str:
 
 
 def normalize_lyrics(raw: str) -> str:
-    """Strip LRC timestamps and blank lines, return plain text."""
+    """Strip LRC tags, metadata, and blank lines, return plain lyrics text."""
     if not raw:
         return ""
     lines = raw.splitlines()
     clean = []
     for line in lines:
-        line = re.sub(r"\[\d+:\d+\.\d+\]", "", line).strip()
+        # Strip all LRC tags: [00:00.00], [ti:...], [ar:...], [al:...], [by:...], etc.
+        line = re.sub(r"\[[^\]]*\]", "", line).strip()
+        # Strip NetEase metadata prefixes
+        line = re.sub(r"^(作词|作曲|编曲|制作人|出品|演唱|混音|母带|录音)\s*[:：]\s*.+", "", line).strip()
         if line:
             clean.append(line)
     return "\n".join(clean)
