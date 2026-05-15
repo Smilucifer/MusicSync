@@ -323,22 +323,13 @@ def main():
     if dead_count:
         print(f"  Marked {dead_count} unmatched tracks as dead (3+ failures)")
 
-    # --- Step 6: Save ---
-    print("\n[Step 6] Saving state...")
+    # --- Step 6: Save CSV ---
+    print("\n[Step 6] Saving CSV...")
     now = datetime.now(timezone.utc).isoformat()
-    state["last_sync"] = now
-    state["netease"]["last_fetch"] = now
-    state["qqmusic"]["last_fetch"] = now
 
     # Save previous track IDs BEFORE overwriting (needed for Step 8 diff)
     prev_ne_ids = {t["id"] for t in state.get("netease", {}).get("tracks", [])}
     prev_qq_ids = {t["id"] for t in state.get("qqmusic", {}).get("tracks", [])}
-
-    # Keep netease_id list for diff baseline
-    state["netease"]["tracks"] = [{"id": t["id"]} for t in ne_tracks]
-    state["qqmusic"]["tracks"] = [{"id": t["id"]} for t in qq_tracks]
-
-    save_state(state)
 
     # Write CSV only when not DRY_RUN (matches are confirmed)
     if not DRY_RUN:
@@ -519,6 +510,16 @@ def main():
 
     print(f"  NetEase→QQ removed: {ne_removed_executed} executed / {len(ne_removed_failed)} failed")
     print(f"  QQ→NetEase removed: {qq_removed_executed} executed / {len(qq_removed_failed)} failed")
+
+    # --- Save state (AFTER Step 8 so crash won't lose unliked detection) ---
+    now = datetime.now(timezone.utc).isoformat()
+    state["last_sync"] = now
+    state["netease"]["last_fetch"] = now
+    state["qqmusic"]["last_fetch"] = now
+    state["netease"]["tracks"] = [{"id": t["id"]} for t in ne_tracks]
+    state["qqmusic"]["tracks"] = [{"id": t["id"]} for t in qq_tracks]
+    save_state(state)
+    print(f"\n  State saved: {now}")
 
     # --- Summary ---
     csv_path = os.path.join(os.path.dirname(__file__), "..", "csv", "song_mappings.csv")
