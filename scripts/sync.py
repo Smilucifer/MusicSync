@@ -303,7 +303,14 @@ def main():
                 matched_l2.append((ne_track, best_match, best_level))
                 record_match(mappings, ne_id, best_match, "name_artist")
             else:
-                # L3: name+artist only, dry-run
+                # L3: name+artist only, dry-run — log why L2 failed
+                if name_artist_candidates:
+                    qq_t = name_artist_candidates[0]
+                    qq_lyrics = fetch_lyrics_with_cache(state, qq_api, str(qq_t["id"]))
+                    from matcher import lyrics_similarity, duration_match
+                    sim = lyrics_similarity(ne_lyrics, qq_lyrics)
+                    dur_ok = duration_match(ne_dur, qq_t.get("duration", 0))
+                    print(f"  [L3 fallback] {ne_track['name']} - sim={sim:.3f} dur_ok={dur_ok}")
                 matched_l3.append((ne_track, name_artist_candidates[0]))
                 record_match(mappings, ne_id, name_artist_candidates[0], "name_artist")
         else:
