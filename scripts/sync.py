@@ -499,10 +499,11 @@ def main():
     qq_removed_executed = 0
     qq_removed_failed = []
     for qq_id in removed_qq_ids:
-        csv_row = lookup_by_qq(mappings, qq_id)
-        if csv_row and csv_row.get("netease_id"):
-            ne_id = csv_row["netease_id"]
-            track_name = f"{csv_row.get('name', qq_id)} - {csv_row.get('artist', '')}"
+        ne_id = lookup_by_qq(mappings, qq_id)
+        if ne_id:
+            # lookup_by_qq returns netease_id string; get track name from mappings
+            ne_row = lookup_by_ne(mappings, ne_id)
+            track_name = f"{ne_row.get('name', qq_id) if ne_row else qq_id} - {ne_row.get('artist', '') if ne_row else ''}"
 
             if DRY_RUN:
                 print(f"  [DRY-RUN] Would remove: {track_name} → NetEase {ne_id}")
