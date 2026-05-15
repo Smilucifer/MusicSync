@@ -329,6 +329,11 @@ def main():
     state["last_sync"] = now
     state["netease"]["last_fetch"] = now
     state["qqmusic"]["last_fetch"] = now
+
+    # Save previous track IDs BEFORE overwriting (needed for Step 8 diff)
+    prev_ne_ids = {t["id"] for t in state.get("netease", {}).get("tracks", [])}
+    prev_qq_ids = {t["id"] for t in state.get("qqmusic", {}).get("tracks", [])}
+
     # Keep netease_id list for diff baseline
     state["netease"]["tracks"] = [{"id": t["id"]} for t in ne_tracks]
     state["qqmusic"]["tracks"] = [{"id": t["id"]} for t in qq_tracks]
@@ -350,7 +355,11 @@ def main():
     qq_only = get_qq_only_tracks(mappings)
     rev_executed = 0
     rev_failed = []
+    rev_skipped = 0
     rev_matched_count = 0
+
+    # Build set of already-liked NetEase IDs to skip redundant adds
+    ne_liked_ids = {str(t["id"]) for t in ne_tracks}
 
     print(f"  QQ-only tracks in CSV: {len(qq_only)}")
 
@@ -422,6 +431,14 @@ def main():
                 print(f"  [DRY-RUN] Would add ({_level}): {track_name} → NetEase {ne_match['id']}")
                 continue
 
+            # Skip if already liked on NetEase
+            if str(ne_match["id"]) in ne_liked_ids:
+                print(f"  SKIP already liked ({_level}): {track_name}")
+                promote_qq_row(mappings, qq_key, ne_match, _level)
+                mark_synced(mappings, str(ne_match["id"]))
+                rev_skipped += 1
+                continue
+
             success = ne_api.add_to_liked(ne_match["id"])
             if success:
                 print(f"  OK ({_level}): {track_name}")
@@ -443,11 +460,7 @@ def main():
     # --- Step 8: Cleanup removed tracks ---
     print("\n[Step 8] Cleanup: removing unliked tracks from the other platform...")
 
-    # Get previous track IDs from state
-    prev_ne_ids = {t["id"] for t in state.get("netease", {}).get("tracks", [])}
-    prev_qq_ids = {t["id"] for t in state.get("qqmusic", {}).get("tracks", [])}
-
-    # Current track IDs
+    # Current track IDs (prev_ne_ids/prev_qq_ids saved before Step 6 overwrote state)
     cur_ne_ids = {str(t["id"]) for t in ne_tracks}
     cur_qq_ids = {str(t["id"]) for t in qq_tracks}
 
@@ -510,7 +523,8 @@ def main():
 **NetEase liked:** {len(ne_tracks)} tracks
 **QQ Music liked:** {len(qq_tracks)} tracks
 **Forward (Ne→QQ):** {executed_l1} executed / {len(failed_l1)} failed / {len(matched_l2)} dry-run / {len(unmatched_new)} unmatched
-**Reverse (QQ→Ne):** {rev_executed} executed / {len(rev_failed)} failed / {rev_matched_count} matched
+**Reverse (QQ→Ne):** {rev_executed} executed / {rev_skipped} already liked / {len(rev_failed)} failed / {rev_matched_count} matched
+**Unliked cleanup:** {ne_removed_executed} Ne→QQ / {qq_removed_executed} QQ→Ne
 **Dead unmatched:** {dead_count}
 
 **CSV database:** `{csv_path}` — edit `match_source` to `manual` and fill `qq_id` to map unmatched tracks.
