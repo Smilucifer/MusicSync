@@ -67,16 +67,20 @@ def is_first_run(state: dict) -> bool:
     return not state.get("last_sync")
 
 
-def get_cached_lyrics(state: dict, track_id: str) -> str:
-    """Get lyrics from cache, or empty string if not cached."""
-    return state.get("lyrics_cache", {}).get(track_id, "")
+def get_cached_lyrics(state: dict, track_id: str) -> str | None:
+    """Get lyrics from cache, or None if not cached."""
+    cache = state.get("lyrics_cache", {})
+    if track_id in cache:
+        return cache[track_id]
+    return None
 
 
 def put_cached_lyrics(state: dict, track_id: str, lyrics: str):
-    """Cache lyrics, evicting oldest if over limit."""
+    """Cache lyrics, evicting oldest if over limit. Skips empty lyrics."""
+    if not lyrics:
+        return
     cache = state.setdefault("lyrics_cache", {})
-    if not lyrics or track_id in cache:
-        cache[track_id] = lyrics
+    if track_id in cache:
         return
     if len(cache) >= LYRICS_CACHE_MAX:
         # Evict oldest (first key inserted)
