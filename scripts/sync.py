@@ -80,9 +80,12 @@ def get_cached_lyrics(state: dict, track_id: str) -> tuple[str, str] | None:
 
 
 def put_cached_lyrics(state: dict, track_id: str, lyrics: tuple[str, str]):
-    """Cache lyrics, evicting oldest if over limit. Skips if both empty."""
+    """Cache lyrics, evicting oldest if over limit. Skips if both empty or encrypted."""
     original, translated = lyrics
     if not original and not translated:
+        return
+    # Don't cache encrypted lyrics (hex strings from QRC)
+    if original and all(c in '0123456789abcdefABCDEF' for c in original.replace('\n', '').replace(' ', '')):
         return
     cache = state.setdefault("lyrics_cache", {})
     if track_id in cache:
@@ -151,6 +154,18 @@ def main():
 
     # Ensure lyrics_cache exists in older state files
     state.setdefault("lyrics_cache", {})
+
+    # Remove encrypted lyrics from cache (hex strings from QRC)
+    cache = state["lyrics_cache"]
+    encrypted_keys = [
+        k for k, v in cache.items()
+        if isinstance(v, (list, tuple)) and v[0]
+        and all(c in '0123456789abcdefABCDEF' for c in v[0].replace('\n', '').replace(' ', ''))
+    ]
+    if encrypted_keys:
+        for k in encrypted_keys:
+            del cache[k]
+        print(f"  Cleared {len(encrypted_keys)} encrypted lyrics from cache")
 
     mappings = load_mappings()
     row_count = sum(1 for k in mappings if k and not k.startswith("_"))
