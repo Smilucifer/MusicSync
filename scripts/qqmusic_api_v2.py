@@ -120,6 +120,9 @@ class QQMusicAPI:
         async with Client(credential=self._credential()) as client:
             try:
                 result = await client.lyric.get_lyric(song_id, trans=True)
+                # Decrypt if needed (QRC format)
+                if hasattr(result, "crypt") and result.crypt == 1:
+                    result = result.decrypt()
                 original = strip_lrc(result.lyric if hasattr(result, "lyric") else "")
                 translated = strip_lrc(result.trans if hasattr(result, "trans") else "")
                 return original, translated
