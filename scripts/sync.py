@@ -464,6 +464,9 @@ def main():
     cur_ne_ids = {str(t["id"]) for t in ne_tracks}
     cur_qq_ids = {str(t["id"]) for t in qq_tracks}
 
+    print(f"  Baseline (prev): NetEase {len(prev_ne_ids)} / QQ {len(prev_qq_ids)}")
+    print(f"  Current:         NetEase {len(cur_ne_ids)} / QQ {len(cur_qq_ids)}")
+
     # Find removed tracks
     removed_ne_ids = prev_ne_ids - cur_ne_ids
     removed_qq_ids = prev_qq_ids - cur_qq_ids
