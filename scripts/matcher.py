@@ -38,8 +38,14 @@ def normalize_lyrics(raw: str) -> str:
     for line in lines:
         # Strip all LRC tags: [00:00.00], [ti:...], [ar:...], [al:...], [by:...], etc.
         line = re.sub(r"\[[^\]]*\]", "", line).strip()
-        # Strip NetEase metadata prefixes
-        line = re.sub(r"^(作词|作曲|编曲|制作人|出品|演唱|混音|母带|录音)\s*[:：]\s*.+", "", line).strip()
+        # Strip metadata credit lines
+        if re.match(r"^(作词|作曲|编曲|词|曲|唱|词曲|制作人|出品|演唱|混音|母带|录音|Programming|All\s+Instrument)\b", line):
+            continue
+        # Strip title-artist lines like "Eclipse - Aimer" (short, no lyric content)
+        if re.match(r"^.{1,60}\s*[-–—]\s*.{1,60}$", line):
+            has_lyric_content = bool(re.search(r"[぀-ゟ゠-ヿ一-鿿]{3,}", line))
+            if not has_lyric_content:
+                continue
         if line:
             clean.append(line)
     return "\n".join(clean)
