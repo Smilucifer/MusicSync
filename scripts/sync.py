@@ -68,14 +68,24 @@ def is_first_run(state: dict) -> bool:
 
 
 def get_cached_lyrics(state: dict, track_id: str) -> tuple[str, str] | None:
-    """Get lyrics from cache, or None if not cached. Returns (original, translated)."""
+    """Get lyrics from cache, or None if not cached. Returns (original, translated).
+    Returns None for encrypted (hex) entries so they get re-fetched and decrypted."""
     cache = state.get("lyrics_cache", {})
     if track_id in cache:
         entry = cache[track_id]
         # Handle legacy string format
         if isinstance(entry, str):
-            return entry, ""
-        return tuple(entry) if isinstance(entry, list) else entry
+            original = entry
+        elif isinstance(entry, list):
+            original = entry[0] if entry else ""
+        elif isinstance(entry, tuple):
+            original = entry[0] if entry else ""
+        else:
+            return None
+        # If cached lyrics are still encrypted hex, treat as cache miss
+        if original and all(c in '0123456789abcdefABCDEF' for c in original.replace('\n', '').replace(' ', '')):
+            return None
+        return tuple(entry) if isinstance(entry, (list, tuple)) else (entry, "")
     return None
 
 
@@ -88,8 +98,16 @@ def put_cached_lyrics(state: dict, track_id: str, lyrics: tuple[str, str]):
     if original and all(c in '0123456789abcdefABCDEF' for c in original.replace('\n', '').replace(' ', '')):
         return
     cache = state.setdefault("lyrics_cache", {})
+    # Allow overwrite if existing entry is encrypted hex
     if track_id in cache:
-        return
+        existing = cache[track_id]
+        if isinstance(existing, (list, tuple)) and existing[0]:
+            if all(c in '0123456789abcdefABCDEF' for c in existing[0].replace('\n', '').replace(' ', '')):
+                pass  # Overwrite encrypted entry
+            else:
+                return  # Keep valid cached entry
+        else:
+            return
     if len(cache) >= LYRICS_CACHE_MAX:
         oldest_key = next(iter(cache))
         del cache[oldest_key]
