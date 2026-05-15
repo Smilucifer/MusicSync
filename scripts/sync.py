@@ -445,7 +445,7 @@ def main():
             for qq_key, qq_track in rev_unmatched:
                 print(f"  [SKIP] {qq_track['name']} - {qq_track['artist']}")
 
-        if not DRY_RUN and rev_executed:
+        if not DRY_RUN and (rev_executed or rev_skipped):
             save_mappings(mappings)
 
     # --- Step 8: Cleanup removed tracks ---
