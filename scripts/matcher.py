@@ -38,30 +38,31 @@ def normalize_lyrics(raw: str) -> str:
     for line in lines:
         # Strip all LRC tags: [00:00.00], [ti:...], [ar:...], [al:...], [by:...], etc.
         line = re.sub(r"\[[^\]]*\]", "", line).strip()
-        # Strip metadata credit lines
-        if re.match(r"^(作词|作曲|编曲|词|曲|唱|词曲|制作人|出品|演唱|混音|母带|录音|Programming|All\s+Instrument)\b", line):
+        # Strip metadata credit lines (Chinese and English)
+        if re.match(r"^(作词|作曲|编曲|词|曲|唱|词曲|制作人|出品|演唱|混音|母带|录音|Lyrics\s+by|Composed\s+by|Programming|All\s+Instrument)\b", line, re.IGNORECASE):
             continue
-        # Strip title-artist lines like "Eclipse - Aimer" (short, no lyric content)
-        if re.match(r"^.{1,60}\s*[-–—]\s*.{1,60}$", line):
-            has_lyric_content = bool(re.search(r"[぀-ゟ゠-ヿ一-鿿]{3,}", line))
-            if not has_lyric_content:
-                continue
+        # Strip title-artist lines like "Eclipse - Aimer" or "チカっとチカ千花っ♡ - 小原好美"
+        # Pattern: something + " - " + something, under 80 chars
+        if re.match(r"^.{1,70}\s+[-–—]\s+.{1,30}$", line):
+            continue
         if line:
             clean.append(line)
     return "\n".join(clean)
 
 
 def lyrics_similarity(text_a: str, text_b: str) -> float:
-    """Compare two normalized lyrics texts. Returns 0.0~1.0."""
+    """Compare two normalized lyrics texts using sequence matching.
+    Returns 0.0~1.0. Uses character-level comparison for robustness
+    against formatting differences (whitespace, punctuation, line breaks)."""
     if not text_a or not text_b:
         return 0.0
-    lines_a = set(text_a.splitlines())
-    lines_b = set(text_b.splitlines())
-    if not lines_a or not lines_b:
+    import difflib
+    # Collapse to continuous strings for comparison
+    a = re.sub(r"\s+", "", text_a)
+    b = re.sub(r"\s+", "", text_b)
+    if not a or not b:
         return 0.0
-    intersection = lines_a & lines_b
-    union = lines_a | lines_b
-    return len(intersection) / len(union) if union else 0.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
 
 
 def duration_match(dur_a: int, dur_b: int, tolerance: int = 3) -> bool:
