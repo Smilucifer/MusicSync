@@ -264,6 +264,7 @@ def main():
     print("\n[Step 4] Matching tracks...")
 
     qq_track_by_id = {t["id"]: t for t in qq_tracks}
+    qq_liked_ids = {t["id"] for t in qq_tracks}
 
     matched_l1 = []     # (ne_track, qq_match, level) — manual + isrc → auto-execute
     matched_l2 = []     # (ne_track, qq_match, level) — lyrics+duration → auto-execute
@@ -391,6 +392,13 @@ def main():
             print(f"  [DRY-RUN] Would add ({_level}): {track_name} → QQ {qq_track['id']}")
             continue
 
+        # Skip if already liked on QQ
+        if str(qq_track["id"]) in qq_liked_ids:
+            print(f"  SKIP already liked ({_level}): {track_name}")
+            mark_synced(mappings, ne_id)
+            executed_l1 += 1
+            continue
+
         success = qq_api.add_to_liked(qq_track["id"])
         if success:
             print(f"  OK ({_level}): {track_name}")
@@ -409,6 +417,13 @@ def main():
 
         if DRY_RUN:
             print(f"  [DRY-RUN] Would add ({_level}): {track_name} → QQ {qq_track['id']}")
+            continue
+
+        # Skip if already liked on QQ
+        if str(qq_track["id"]) in qq_liked_ids:
+            print(f"  SKIP already liked ({_level}): {track_name}")
+            mark_synced(mappings, ne_id)
+            executed_l2 += 1
             continue
 
         success = qq_api.add_to_liked(qq_track["id"])
