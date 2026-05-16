@@ -581,16 +581,19 @@ def main():
         for qq_key, ne_match, _level in rev_matched:
             track_name = f"{ne_match['name']} - {ne_match['artist']}"
 
-            if DRY_RUN:
-                print(f"  [DRY-RUN] Would add ({_level}): {track_name} → NetEase {ne_match['id']}")
-                continue
-
             # Skip if already liked on NetEase
             if str(ne_match["id"]) in ne_liked_ids:
-                print(f"  SKIP already liked ({_level}): {track_name}")
-                promote_qq_row(mappings, qq_key, ne_match, _level)
-                mark_synced(mappings, str(ne_match["id"]))
+                if DRY_RUN:
+                    print(f"  [DRY-RUN] SKIP already liked ({_level}): {track_name}")
+                else:
+                    print(f"  SKIP already liked ({_level}): {track_name}")
+                    promote_qq_row(mappings, qq_key, ne_match, _level)
+                    mark_synced(mappings, str(ne_match["id"]))
                 rev_skipped += 1
+                continue
+
+            if DRY_RUN:
+                print(f"  [DRY-RUN] Would add ({_level}): {track_name} → NetEase {ne_match['id']}")
                 continue
 
             success = ne_api.add_to_liked(ne_match["id"])
