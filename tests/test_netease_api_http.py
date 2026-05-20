@@ -27,7 +27,13 @@ def test_login_status():
     assert login_data.get("code") == 200
 
 def test_search():
-    """Test /search endpoint with POST (required when MUSIC_U cookie is set)."""
+    """Test /search endpoint with POST.
+
+    REGRESSION GUARD: NeteaseCloudMusicApiEnhanced returns 405 Method Not Allowed
+    on GET /search after a MUSIC_U cookie is set (i.e. after login). All callers
+    in scripts/netease_api.py must use POST. See
+    docs/superpowers/specs/2026-05-20-musicsync-sync-fixes-design.md
+    """
     response = requests.post(
         f"{BASE_URL}/search",
         data={"keywords": "周杰伦", "limit": 5},
