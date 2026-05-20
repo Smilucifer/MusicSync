@@ -132,6 +132,34 @@ def test_upsert_platform_link_updates_on_conflict():
         os.unlink(path)
 
 
+def test_upsert_platform_link_preserves_synced_at_when_none():
+    """COALESCE guarantee: upserting with synced_at=None must NOT overwrite an existing value."""
+    path = _temp_db()
+    try:
+        init_db(path)
+        with connect(path) as conn:
+            sid = upsert_song(conn, canonical_key="a|b", name="A", artist="B",
+                              album="C", match_source="manual")
+            # First upsert: set a real synced_at
+            upsert_platform_link(conn, song_id=sid, platform="netease",
+                                 platform_track_id="999", platform_name="A",
+                                 platform_artist="B", platform_album="C",
+                                 liked=1, synced_at="2026-05-21T00:00:00+00:00")
+            # Second upsert: routine fetch — synced_at is None, must not wipe the stored value
+            upsert_platform_link(conn, song_id=sid, platform="netease",
+                                 platform_track_id="999", platform_name="A (new name)",
+                                 platform_artist="B", platform_album="C",
+                                 liked=1, synced_at=None)
+            link = get_link(conn, "netease", "999")
+        assert link["synced_at"] == "2026-05-21T00:00:00+00:00", (
+            f"synced_at was wiped; got {link['synced_at']!r}"
+        )
+        # Confirm the non-synced_at fields were still updated
+        assert link["platform_name"] == "A (new name)"
+    finally:
+        os.unlink(path)
+
+
 def test_meta_set_and_get():
     path = _temp_db()
     try:
@@ -151,5 +179,6 @@ if __name__ == "__main__":
     test_unique_platform_track_id_enforced()
     test_canonical_key_index_allows_duplicates()
     test_upsert_platform_link_updates_on_conflict()
+    test_upsert_platform_link_preserves_synced_at_when_none()
     test_meta_set_and_get()
     print("ALL OK")
