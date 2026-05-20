@@ -115,6 +115,20 @@ def test_no_duplicate_platform_track_id():
         os.unlink(db)
 
 
+def test_summary_dict_shape():
+    db = _temp_db()
+    try:
+        from migrate_csv_to_db import migrate_csv as _m
+        summary = _m(str(FIXTURE), db)
+        assert "rows" in summary
+        assert "songs" in summary
+        assert "links" in summary
+        assert summary["rows"] == 8
+        assert summary["songs"] >= 5  # 8 rows merge into 5+ songs (A1 collapses 2 into 1)
+    finally:
+        os.unlink(db)
+
+
 if __name__ == "__main__":
     test_a2_distinct_album_versions_kept_separate()
     test_a1_same_qq_id_merged_into_one_song()
@@ -122,4 +136,5 @@ if __name__ == "__main__":
     test_manual_preserved()
     test_non_manual_records_original_match_source()
     test_no_duplicate_platform_track_id()
+    test_summary_dict_shape()
     print("ALL OK")

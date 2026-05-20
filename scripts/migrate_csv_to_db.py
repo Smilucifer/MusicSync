@@ -154,10 +154,13 @@ def migrate_csv(csv_path: str, db_path: str) -> dict:
                 cache = state.get("lyrics_cache", {})
                 imported = 0
                 for k, v in cache.items():
-                    if ":" not in k:
-                        continue
-                    platform, tid = k.split(":", 1)
-                    if platform not in ("netease", "qq") or not tid:
+                    if ":" in k:
+                        platform, tid = k.split(":", 1)
+                        if platform not in ("netease", "qq") or not tid:
+                            continue
+                    elif k.isdigit():
+                        platform, tid = "netease", k
+                    else:
                         continue
                     if isinstance(v, dict):
                         original = v.get("original", "") or v.get("lyric", "") or ""
