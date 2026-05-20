@@ -252,16 +252,3 @@ def check_link_conflict(
     if row["song_id"] == current_song_id:
         return None
     return row["song_id"]
-
-
-# --- Backwards-compat shims (removed in Task 4 when sync.py is rewritten) ---
-
-def match_track(netease_track: dict,
-                qq_search_results: list[dict]) -> tuple[Optional[dict], str]:
-    """LEGACY: old sync.py entry — equivalent to find_match_in_candidates."""
-    return find_match_in_candidates(netease_track, qq_search_results)
-
-
-def duration_match(dur_a: int, dur_b: int, tolerance: int = 3) -> bool:
-    """LEGACY: old fixed-tolerance duration check used by sync.py diagnostics."""
-    return _duration_match(dur_a, dur_b, tolerance)
