@@ -79,6 +79,9 @@ class NetEaseAPI:
             data = response.json()
             # Enhanced API wraps some responses in {"data": {...}}
             return data.get("data", data)
+        except requests.HTTPError as e:
+            print(f"HTTP error: {e}")
+            raise  # let caller decide (search wants to fail-fast; others swallow)
         except Exception as e:
             print(f"Request failed: {e}")
             return {}
@@ -87,7 +90,10 @@ class NetEaseAPI:
         if not self.uid:
             return []
 
-        result = self._request("/likelist", uid=str(self.uid))
+        try:
+            result = self._request("/likelist", uid=str(self.uid))
+        except requests.HTTPError:
+            return []
         if result.get("code") != 200:
             return []
 
@@ -98,7 +104,10 @@ class NetEaseAPI:
             return []
 
         ids_str = ",".join(str(tid) for tid in track_ids)
-        result = self._request("/song/detail", ids=ids_str)
+        try:
+            result = self._request("/song/detail", ids=ids_str)
+        except requests.HTTPError:
+            return []
 
         if result.get("code") != 200:
             return []
@@ -157,17 +166,26 @@ class NetEaseAPI:
         ]
 
     def add_to_liked(self, track_id: str) -> bool:
-        result = self._request("/like", method="POST", id=track_id, like="true")
+        try:
+            result = self._request("/like", method="POST", id=track_id, like="true")
+        except requests.HTTPError:
+            return False
         return result.get("code") == 200
 
     def remove_from_liked(self, track_id: str) -> bool:
-        result = self._request("/like", method="POST", id=track_id, like="false")
+        try:
+            result = self._request("/like", method="POST", id=track_id, like="false")
+        except requests.HTTPError:
+            return False
         return result.get("code") == 200
 
     def get_lyric(self, track_id: str) -> tuple[str, str]:
         """Fetch lyrics for a track. Returns (original, translated) plain text."""
         import re
-        result = self._request("/lyric", id=track_id)
+        try:
+            result = self._request("/lyric", id=track_id)
+        except requests.HTTPError:
+            return "", ""
 
         def strip_lrc(raw: str) -> str:
             if not raw:
