@@ -158,10 +158,48 @@ def test_unlike_safety_gate_skips_cleanup_when_over_threshold():
         os.unlink(db)
 
 
+def test_match_unlinked_and_execute_creates_add_action():
+    """Step 5→6→8 happy path: single-side song matches via L3, ADD fires, FakeAPI records it."""
+    fd, db = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        init_db(db)
+        with connect(db) as conn:
+            sid = upsert_song(conn, canonical_key="solo|artist",
+                              name="Solo", artist="Artist", album=None,
+                              match_source="manual")
+            upsert_platform_link(conn, song_id=sid, platform="netease",
+                                 platform_track_id="ne1",
+                                 platform_name="Solo", platform_artist="Artist",
+                                 platform_album="", liked=1, synced_at=now_iso())
+            set_meta(conn, "last_sync_at", "2026-05-20T00:00:00+00:00")
+
+        ne = FakeAPI([{"id": "ne1", "name": "Solo", "artist": "Artist", "album": ""}])
+        # QQ search for "Solo Artist" returns one candidate that L3 will match
+        qq = FakeAPI(
+            tracks=[],
+            search_results={
+                "Solo Artist": [{"id": "qq_new", "name": "Solo", "artist": "Artist", "album": ""}],
+            },
+        )
+        result = sync.run_pipeline(
+            ne, qq, db_path=db, dry_run=False,
+            force_full_sync=True,  # 跳过 fetch sanity (db has 1 ne link, fetch has 1 → 0% drop ok 但保险起见)
+        )
+        # FakeAPI.adds should contain the qq track id our matcher wired up
+        assert "qq_new" in qq.adds, f"expected qq_new in qq.adds, got {qq.adds}"
+        # No QQ-side tracks were fetched, so no unlikes should be queued (NE has the song, QQ doesn't)
+        # cleanup_skipped should be True (force_full_sync)
+        assert result.get("cleanup_skipped") is True
+    finally:
+        os.unlink(db)
+
+
 if __name__ == "__main__":
     test_plan_steady_state_yields_nothing()
     test_plan_unlike_detected_when_track_missing()
     test_fetch_sanity_check_aborts_on_large_drop()
     test_fetch_sanity_skipped_on_first_run()
     test_unlike_safety_gate_skips_cleanup_when_over_threshold()
+    test_match_unlinked_and_execute_creates_add_action()  # NEW
     print("ALL OK")

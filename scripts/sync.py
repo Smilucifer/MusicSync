@@ -30,8 +30,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from auth_manager import AuthManager
 from db import (
     init_db, connect, get_db_path,
-    upsert_song, upsert_platform_link, set_link_liked,
-    get_links_for_platform, get_links_for_song,
+    upsert_song, upsert_platform_link,
+    get_links_for_song,
     get_meta, set_meta, now_iso,
     get_lyrics, put_lyrics,
     update_match_source,
@@ -359,7 +359,7 @@ def dump_snapshot(conn: sqlite3.Connection, path: Path) -> int:
         "FROM songs s ORDER BY s.id"
     )
     for s in cur.fetchall():
-        links = {ll["platform"]: ll for ll in get_links_for_song(conn, s["id"])}
+        links = {ll["platform"]: ll for ll in get_links_for_song(conn, s["song_id"])}
         ne = links.get("netease")
         qq = links.get("qq")
         rows.append({
