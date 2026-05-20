@@ -5,6 +5,7 @@ import json
 import time
 import random
 from datetime import datetime, timezone
+import requests
 
 # Fix Windows console encoding for Unicode output
 if sys.platform == "win32":
@@ -29,6 +30,57 @@ DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 FORCE_FULL_SYNC = os.getenv("FORCE_FULL_SYNC", "false").lower() == "true"
 REVERSE_BATCH = int(os.getenv("REVERSE_BATCH", "0"))  # per-run limit, 0=unlimited
 LYRICS_CACHE_MAX = 1000
+
+SEARCH_FAILURE_THRESHOLD = 3
+BACKOFF_SECONDS = [30, 60, 120]  # 120s is a cap for future SEARCH_FAILURE_THRESHOLD > 3
+
+
+class ReverseSearchState:
+    """Tracks consecutive failures + backoff progression across the reverse-sync loop."""
+
+    def __init__(self):
+        self.consecutive_failures = 0
+        self.backoff_idx = 0
+        self.aborted = False
+
+    def record_success(self):
+        self.consecutive_failures = 0
+        self.backoff_idx = 0
+
+    def record_failure(self) -> int:
+        """Returns the wait time in seconds for the next retry."""
+        self.consecutive_failures += 1
+        wait = BACKOFF_SECONDS[min(self.backoff_idx, len(BACKOFF_SECONDS) - 1)]
+        self.backoff_idx += 1
+        return wait
+
+    @property
+    def should_abort(self) -> bool:
+        return self.consecutive_failures >= SEARCH_FAILURE_THRESHOLD
+
+
+def search_netease_with_backoff(ne_api, query: str, state: ReverseSearchState, limit: int = 3) -> list[dict]:
+    """Search NetEase with retry on HTTPError. Returns [] on persistent failure.
+
+    Sets state.aborted=True if SEARCH_FAILURE_THRESHOLD consecutive failures hit.
+    State tracks individual HTTP attempts across calls, not call-level invocations.
+    Callers must check state.aborted before each invocation.
+    """
+    for attempt in range(2):  # original + 1 retry
+        try:
+            results = ne_api.search(query, limit=limit)
+            state.record_success()
+            return results
+        except requests.HTTPError as e:
+            wait = state.record_failure()
+            status = e.response.status_code if e.response is not None else "?"
+            if state.should_abort:
+                print(f"  ABORT reverse sync — {SEARCH_FAILURE_THRESHOLD} consecutive search failures (last HTTP {status})")
+                state.aborted = True
+                return []
+            print(f"  HTTP {status} on search — waiting {wait}s before retry")
+            time.sleep(wait)
+    return []
 
 
 def load_state() -> dict:
