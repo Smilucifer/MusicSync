@@ -123,7 +123,11 @@ def l0_canonicalize(
         return existing["song_id"], link_id
 
     ck = canonical_key(track.get("name", ""), track.get("artist", ""))
-    candidates = get_song_by_canonical(conn, ck)
+    if ck == "|":
+        # No usable name+artist — skip canonical merge, create isolated song
+        candidates = []
+    else:
+        candidates = get_song_by_canonical(conn, ck)
     if not candidates:
         song_id = upsert_song(
             conn,
@@ -165,8 +169,8 @@ def _duration_match(da: int, db_: int, tol: int) -> bool:
 
 
 def match_l2(a: dict, b: dict) -> bool:
-    a_orig, a_trans = a.get("_lyrics", ("", ""))
-    b_orig, b_trans = b.get("_lyrics", ("", ""))
+    a_orig, a_trans = a.get("_lyrics") or ("", "")
+    b_orig, b_trans = b.get("_lyrics") or ("", "")
     da, db_ = a.get("duration", 0), b.get("duration", 0)
 
     pairs = []

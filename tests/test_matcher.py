@@ -174,6 +174,26 @@ def test_l0_canonical_hit_attaches_to_primary():
         os.unlink(db)
 
 
+def test_l0_canonical_hit_picks_primary_among_multiple():
+    """新 track 命中 ≥2 个 canonical_key 的 song → 走 pick_primary_song 选主版本。"""
+    db = _temp_db()
+    try:
+        init_db(db)
+        with connect(db) as conn:
+            sid_other = upsert_song(conn, canonical_key="fresh|nobody", name="Fresh",
+                                    artist="Nobody", album="Album1", match_source="migrated")
+            sid_manual = upsert_song(conn, canonical_key="fresh|nobody", name="Fresh",
+                                     artist="Nobody", album="Album2", match_source="manual")
+            new_song_id, _ = l0_canonicalize(
+                conn, platform="netease",
+                track={"id": "777", "name": "Fresh", "artist": "Nobody", "album": "Album3"},
+            )
+        assert new_song_id == sid_manual  # manual takes priority over migrated
+        assert sid_other  # silence flake8
+    finally:
+        os.unlink(db)
+
+
 # --- L2 短歌词 duration 收紧 ---
 
 def test_l2_long_lyrics_uses_15s_tolerance():
@@ -254,6 +274,33 @@ def test_check_link_conflict_returns_none_when_own():
         os.unlink(db)
 
 
+# --- L1/L2 dispatch through find_match_in_candidates ---
+
+def test_find_dispatches_to_l1():
+    src = {"isrc": "USRC1", "name": "X", "artist": "Y"}
+    candidates = [
+        {"id": "wrong", "isrc": "OTHER", "name": "Z", "artist": "Y"},
+        {"id": "right", "isrc": "usrc1", "name": "Z", "artist": "Y"},
+    ]
+    matched, level = find_match_in_candidates(src, candidates)
+    assert level == "L1"
+    assert matched["id"] == "right"
+
+
+def test_find_dispatches_to_l2():
+    src = {"name": "X", "artist": "Y", "duration": 200,
+           "_lyrics": ("a\n" * 200, "")}
+    candidates = [
+        {"id": "wrong", "name": "Z", "artist": "Y", "duration": 999,
+         "_lyrics": ("zzz\n" * 200, "")},
+        {"id": "right", "name": "Z", "artist": "Y", "duration": 210,
+         "_lyrics": ("a\n" * 200, "")},
+    ]
+    matched, level = find_match_in_candidates(src, candidates)
+    assert level == "L2"
+    assert matched["id"] == "right"
+
+
 # --- L1 / L3 / artist containment 保持 ---
 
 def test_l1_exact_isrc_match():
@@ -270,11 +317,14 @@ if __name__ == "__main__":
     test_l0_existing_link_updates_in_place()
     test_l0_new_track_creates_song()
     test_l0_canonical_hit_attaches_to_primary()
+    test_l0_canonical_hit_picks_primary_among_multiple()
     test_l2_long_lyrics_uses_15s_tolerance()
     test_l2_short_lyrics_keeps_5s_tolerance()
     test_l3_with_single_candidate_matches()
     test_l3_with_multiple_same_canonical_skips()
     test_check_link_conflict_returns_other_song_id()
     test_check_link_conflict_returns_none_when_own()
+    test_find_dispatches_to_l1()
+    test_find_dispatches_to_l2()
     test_l1_exact_isrc_match()
     print("ALL OK")
