@@ -5,6 +5,7 @@ import json
 import time
 import random
 from datetime import datetime, timezone
+import requests
 
 # Fix Windows console encoding for Unicode output
 if sys.platform == "win32":
@@ -29,6 +30,57 @@ DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 FORCE_FULL_SYNC = os.getenv("FORCE_FULL_SYNC", "false").lower() == "true"
 REVERSE_BATCH = int(os.getenv("REVERSE_BATCH", "0"))  # per-run limit, 0=unlimited
 LYRICS_CACHE_MAX = 1000
+
+SEARCH_FAILURE_THRESHOLD = 3
+BACKOFF_SECONDS = [30, 60, 120]  # 120s is a cap for future SEARCH_FAILURE_THRESHOLD > 3
+
+
+class ReverseSearchState:
+    """Tracks consecutive failures + backoff progression across the reverse-sync loop."""
+
+    def __init__(self):
+        self.consecutive_failures = 0
+        self.backoff_idx = 0
+        self.aborted = False
+
+    def record_success(self):
+        self.consecutive_failures = 0
+        self.backoff_idx = 0
+
+    def record_failure(self) -> int:
+        """Returns the wait time in seconds for the next retry."""
+        self.consecutive_failures += 1
+        wait = BACKOFF_SECONDS[min(self.backoff_idx, len(BACKOFF_SECONDS) - 1)]
+        self.backoff_idx += 1
+        return wait
+
+    @property
+    def should_abort(self) -> bool:
+        return self.consecutive_failures >= SEARCH_FAILURE_THRESHOLD
+
+
+def search_netease_with_backoff(ne_api, query: str, state: ReverseSearchState, limit: int = 3) -> list[dict]:
+    """Search NetEase with retry on HTTPError. Returns [] on persistent failure.
+
+    Sets state.aborted=True if SEARCH_FAILURE_THRESHOLD consecutive failures hit.
+    State tracks individual HTTP attempts across calls, not call-level invocations.
+    Callers must check state.aborted before each invocation.
+    """
+    for attempt in range(2):  # original + 1 retry
+        try:
+            results = ne_api.search(query, limit=limit)
+            state.record_success()
+            return results
+        except requests.HTTPError as e:
+            wait = state.record_failure()
+            status = e.response.status_code if e.response is not None else "?"
+            if state.should_abort:
+                print(f"  ABORT reverse sync — {SEARCH_FAILURE_THRESHOLD} consecutive search failures (last HTTP {status})")
+                state.aborted = True
+                return []
+            print(f"  HTTP {status} on search — waiting {wait}s before retry")
+            time.sleep(wait)
+    return []
 
 
 def load_state() -> dict:
@@ -513,7 +565,12 @@ def main():
         rev_matched = []   # (qq_key, ne_track, level)
         rev_unmatched = []
 
+        search_state = ReverseSearchState()
         for qq_key, qq_row in qq_only:
+            if search_state.aborted:
+                print(f"  Skipping remaining {len(qq_only) - len(rev_matched) - len(rev_unmatched)} tracks after abort")
+                break
+
             qq_name = qq_row.get("qq_name", qq_row.get("name", ""))
             qq_artist = qq_row.get("qq_artist", qq_row.get("artist", ""))
             qq_id = qq_row.get("qq_id", "")
@@ -534,45 +591,47 @@ def main():
             # 2) Search NetEase if no match in liked tracks
             if not ne_match:
                 time.sleep(5)  # rate-limit: avoid 405 errors
-                try:
-                    results = ne_api.search(f"{qq_name} {qq_artist}", limit=3)
-                    if results:
-                        # Try L1 first
+                results = search_netease_with_backoff(
+                    ne_api, f"{qq_name} {qq_artist}", search_state, limit=3,
+                )
+                if search_state.aborted:
+                    rev_unmatched.append((qq_key, qq_track))
+                    continue
+                if results:
+                    # Try L1 first
+                    for r in results:
+                        if match_l1(qq_track, r):
+                            ne_match = r
+                            level = "isrc"
+                            break
+                    # Then try lyrics+duration
+                    if not ne_match:
+                        qq_lyrics = fetch_lyrics_with_cache(state, qq_api, qq_id)
+                        qq_track["_lyrics"] = qq_lyrics
                         for r in results:
-                            if match_l1(qq_track, r):
+                            ne_lyrics = fetch_lyrics_with_cache(state, ne_api, str(r["id"]))
+                            r["_lyrics"] = ne_lyrics
+                            if match_l2(qq_track, r):
                                 ne_match = r
-                                level = "isrc"
+                                level = "lyrics_duration"
                                 break
-                        # Then try lyrics+duration
-                        if not ne_match:
-                            qq_lyrics = fetch_lyrics_with_cache(state, qq_api, qq_id)
-                            qq_track["_lyrics"] = qq_lyrics
-                            for r in results:
-                                ne_lyrics = fetch_lyrics_with_cache(state, ne_api, str(r["id"]))
-                                r["_lyrics"] = ne_lyrics
-                                if match_l2(qq_track, r):
-                                    ne_match = r
-                                    level = "lyrics_duration"
-                                    break
-                        # Finally try name+artist
-                        if not ne_match:
-                            best, best_lv = match_track(qq_track, results)
-                            if best_lv:
-                                ne_match = best
-                                level = "name_artist"
-                except Exception:
-                    pass
+                    # Finally try name+artist
+                    if not ne_match:
+                        best, best_lv = match_track(qq_track, results)
+                        if best_lv:
+                            ne_match = best
+                            level = "name_artist"
 
             if ne_match and level:
                 rev_matched.append((qq_key, ne_match, level))
             else:
                 rev_unmatched.append((qq_key, qq_track))
 
-        isrc_count = sum(1 for m in rev_matched if m[2] == "isrc")
+        rev_isrc_count = sum(1 for m in rev_matched if m[2] == "isrc")
         ld_count = sum(1 for m in rev_matched if m[2] == "lyrics_duration")
         na_count = sum(1 for m in rev_matched if m[2] == "name_artist")
         rev_matched_count = len(rev_matched)
-        print(f"  ISRC matches: {isrc_count}")
+        print(f"  ISRC matches: {rev_isrc_count}")
         print(f"  Lyrics+Duration matches: {ld_count}")
         print(f"  Name+Artist matches: {na_count}")
         print(f"  No match: {len(rev_unmatched)}")
@@ -690,12 +749,35 @@ def main():
 
     # --- Summary ---
     csv_path = os.path.join(os.path.dirname(__file__), "..", "csv", "song_mappings.csv")
+    if DRY_RUN:
+        forward_line = (
+            f"**Forward (Ne→QQ) [DRY-RUN]:** would add {len(matched_l1) + len(matched_l2)} "
+            f"({isrc_count} ISRC + {len(matched_l2)} lyrics + {manual_count} manual) "
+            f"/ {len(matched_l3)} name_artist preview / {len(unmatched_new)} unmatched"
+        )
+        reverse_line = (
+            f"**Reverse (QQ→Ne) [DRY-RUN]:** would add {rev_matched_count} matched "
+            f"/ {rev_skipped} already liked"
+        )
+    else:
+        forward_line = (
+            f"**Forward (Ne→QQ):** {executed_l1 + executed_l2} executed "
+            f"({isrc_count} ISRC + {len(matched_l2)} lyrics) / "
+            f"{len(failed_l1) + len(failed_l2)} failed / "
+            f"{len(matched_l3)} dry-run / {len(unmatched_new)} unmatched"
+        )
+        reverse_line = (
+            f"**Reverse (QQ→Ne):** {rev_executed} executed / "
+            f"{rev_skipped} already liked / {len(rev_failed)} failed / "
+            f"{rev_matched_count} matched"
+        )
+
     summary = f"""## MusicSync {'DRY-RUN' if DRY_RUN else 'Complete'}
 **Time:** {now}
 **NetEase liked:** {len(ne_tracks)} tracks
 **QQ Music liked:** {len(qq_tracks)} tracks
-**Forward (Ne→QQ):** {executed_l1 + executed_l2} executed ({isrc_count} ISRC + {len(matched_l2)} lyrics) / {len(failed_l1) + len(failed_l2)} failed / {len(matched_l3)} dry-run / {len(unmatched_new)} unmatched
-**Reverse (QQ→Ne):** {rev_executed} executed / {rev_skipped} already liked / {len(rev_failed)} failed / {rev_matched_count} matched
+{forward_line}
+{reverse_line}
 **Unliked cleanup:** {ne_removed_executed} Ne→QQ / {qq_removed_executed} QQ→Ne
 **Dead unmatched:** {dead_count}
 
