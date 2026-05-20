@@ -565,7 +565,12 @@ def main():
         rev_matched = []   # (qq_key, ne_track, level)
         rev_unmatched = []
 
+        search_state = ReverseSearchState()
         for qq_key, qq_row in qq_only:
+            if search_state.aborted:
+                print(f"  Skipping remaining {len(qq_only) - len(rev_matched) - len(rev_unmatched)} tracks after abort")
+                break
+
             qq_name = qq_row.get("qq_name", qq_row.get("name", ""))
             qq_artist = qq_row.get("qq_artist", qq_row.get("artist", ""))
             qq_id = qq_row.get("qq_id", "")
@@ -586,34 +591,36 @@ def main():
             # 2) Search NetEase if no match in liked tracks
             if not ne_match:
                 time.sleep(5)  # rate-limit: avoid 405 errors
-                try:
-                    results = ne_api.search(f"{qq_name} {qq_artist}", limit=3)
-                    if results:
-                        # Try L1 first
+                results = search_netease_with_backoff(
+                    ne_api, f"{qq_name} {qq_artist}", search_state, limit=3,
+                )
+                if search_state.aborted:
+                    rev_unmatched.append((qq_key, qq_track))
+                    continue
+                if results:
+                    # Try L1 first
+                    for r in results:
+                        if match_l1(qq_track, r):
+                            ne_match = r
+                            level = "isrc"
+                            break
+                    # Then try lyrics+duration
+                    if not ne_match:
+                        qq_lyrics = fetch_lyrics_with_cache(state, qq_api, qq_id)
+                        qq_track["_lyrics"] = qq_lyrics
                         for r in results:
-                            if match_l1(qq_track, r):
+                            ne_lyrics = fetch_lyrics_with_cache(state, ne_api, str(r["id"]))
+                            r["_lyrics"] = ne_lyrics
+                            if match_l2(qq_track, r):
                                 ne_match = r
-                                level = "isrc"
+                                level = "lyrics_duration"
                                 break
-                        # Then try lyrics+duration
-                        if not ne_match:
-                            qq_lyrics = fetch_lyrics_with_cache(state, qq_api, qq_id)
-                            qq_track["_lyrics"] = qq_lyrics
-                            for r in results:
-                                ne_lyrics = fetch_lyrics_with_cache(state, ne_api, str(r["id"]))
-                                r["_lyrics"] = ne_lyrics
-                                if match_l2(qq_track, r):
-                                    ne_match = r
-                                    level = "lyrics_duration"
-                                    break
-                        # Finally try name+artist
-                        if not ne_match:
-                            best, best_lv = match_track(qq_track, results)
-                            if best_lv:
-                                ne_match = best
-                                level = "name_artist"
-                except Exception:
-                    pass
+                    # Finally try name+artist
+                    if not ne_match:
+                        best, best_lv = match_track(qq_track, results)
+                        if best_lv:
+                            ne_match = best
+                            level = "name_artist"
 
             if ne_match and level:
                 rev_matched.append((qq_key, ne_match, level))
