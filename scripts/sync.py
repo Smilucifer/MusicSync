@@ -627,11 +627,11 @@ def main():
             else:
                 rev_unmatched.append((qq_key, qq_track))
 
-        isrc_count = sum(1 for m in rev_matched if m[2] == "isrc")
+        rev_isrc_count = sum(1 for m in rev_matched if m[2] == "isrc")
         ld_count = sum(1 for m in rev_matched if m[2] == "lyrics_duration")
         na_count = sum(1 for m in rev_matched if m[2] == "name_artist")
         rev_matched_count = len(rev_matched)
-        print(f"  ISRC matches: {isrc_count}")
+        print(f"  ISRC matches: {rev_isrc_count}")
         print(f"  Lyrics+Duration matches: {ld_count}")
         print(f"  Name+Artist matches: {na_count}")
         print(f"  No match: {len(rev_unmatched)}")
@@ -749,12 +749,35 @@ def main():
 
     # --- Summary ---
     csv_path = os.path.join(os.path.dirname(__file__), "..", "csv", "song_mappings.csv")
+    if DRY_RUN:
+        forward_line = (
+            f"**Forward (Ne→QQ) [DRY-RUN]:** would add {len(matched_l1) + len(matched_l2)} "
+            f"({isrc_count} ISRC + {len(matched_l2)} lyrics + {manual_count} manual) "
+            f"/ {len(matched_l3)} name_artist preview / {len(unmatched_new)} unmatched"
+        )
+        reverse_line = (
+            f"**Reverse (QQ→Ne) [DRY-RUN]:** would add {rev_matched_count} matched "
+            f"/ {rev_skipped} already liked"
+        )
+    else:
+        forward_line = (
+            f"**Forward (Ne→QQ):** {executed_l1 + executed_l2} executed "
+            f"({isrc_count} ISRC + {len(matched_l2)} lyrics) / "
+            f"{len(failed_l1) + len(failed_l2)} failed / "
+            f"{len(matched_l3)} dry-run / {len(unmatched_new)} unmatched"
+        )
+        reverse_line = (
+            f"**Reverse (QQ→Ne):** {rev_executed} executed / "
+            f"{rev_skipped} already liked / {len(rev_failed)} failed / "
+            f"{rev_matched_count} matched"
+        )
+
     summary = f"""## MusicSync {'DRY-RUN' if DRY_RUN else 'Complete'}
 **Time:** {now}
 **NetEase liked:** {len(ne_tracks)} tracks
 **QQ Music liked:** {len(qq_tracks)} tracks
-**Forward (Ne→QQ):** {executed_l1 + executed_l2} executed ({isrc_count} ISRC + {len(matched_l2)} lyrics) / {len(failed_l1) + len(failed_l2)} failed / {len(matched_l3)} dry-run / {len(unmatched_new)} unmatched
-**Reverse (QQ→Ne):** {rev_executed} executed / {rev_skipped} already liked / {len(rev_failed)} failed / {rev_matched_count} matched
+{forward_line}
+{reverse_line}
 **Unliked cleanup:** {ne_removed_executed} Ne→QQ / {qq_removed_executed} QQ→Ne
 **Dead unmatched:** {dead_count}
 
