@@ -107,6 +107,9 @@ def l0_canonicalize(
     track: dict,
 ) -> tuple[int, int]:
     tid = str(track["id"])
+    name = track.get("name") or ""
+    artist = track.get("artist") or ""
+    album = track.get("album") or None
 
     existing = get_link(conn, platform, tid)
     if existing is not None:
@@ -115,14 +118,14 @@ def l0_canonicalize(
             song_id=existing["song_id"],
             platform=platform,
             platform_track_id=tid,
-            platform_name=track.get("name", ""),
-            platform_artist=track.get("artist", ""),
-            platform_album=track.get("album", ""),
+            platform_name=name,
+            platform_artist=artist,
+            platform_album=album or "",
             liked=1,
         )
         return existing["song_id"], link_id
 
-    ck = canonical_key(track.get("name", ""), track.get("artist", ""))
+    ck = canonical_key(name, artist)
     if ck == "|":
         # No usable name+artist — skip canonical merge, create isolated song
         candidates = []
@@ -132,9 +135,9 @@ def l0_canonicalize(
         song_id = upsert_song(
             conn,
             canonical_key=ck,
-            name=track.get("name", ""),
-            artist=track.get("artist", ""),
-            album=track.get("album") or None,
+            name=name,
+            artist=artist,
+            album=album,
             match_source="l0_canonical",
         )
     else:
@@ -146,9 +149,9 @@ def l0_canonicalize(
         song_id=song_id,
         platform=platform,
         platform_track_id=tid,
-        platform_name=track.get("name", ""),
-        platform_artist=track.get("artist", ""),
-        platform_album=track.get("album", ""),
+        platform_name=name,
+        platform_artist=artist,
+        platform_album=album or "",
         liked=1,
     )
     return song_id, link_id

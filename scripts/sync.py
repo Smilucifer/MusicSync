@@ -253,9 +253,9 @@ def match_unlinked(
         upsert_platform_link(
             conn, song_id=sid, platform=target,
             platform_track_id=str(match["id"]),
-            platform_name=match.get("name", ""),
-            platform_artist=match.get("artist", ""),
-            platform_album=match.get("album", ""),
+            platform_name=match.get("name") or "",
+            platform_artist=match.get("artist") or "",
+            platform_album=match.get("album") or "",
             liked=0, synced_at=None,
         )
         update_match_source(conn, sid, {"L1": "l1_isrc", "L2": "l2_lyrics",
