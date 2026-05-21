@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from db import (
     init_db, connect, upsert_song, upsert_platform_link, put_lyrics, set_meta,
 )
-from matcher import clean_name, clean_artist  # uses post-rewrite matcher's helpers; available now from old matcher too
+from matcher import canonical_key
 
 
 PRIORITY = {
@@ -47,10 +47,6 @@ class UnionFind:
 
     def add(self, x: int) -> None:
         self.parent.setdefault(x, x)
-
-
-def _canonical_key(name: str, artist: str) -> str:
-    return f"{clean_name(name)}|{clean_artist(artist)}"
 
 
 def _priority(row: dict) -> int:
@@ -103,7 +99,7 @@ def migrate_csv(csv_path: str, db_path: str) -> dict:
 
             song_id = upsert_song(
                 conn,
-                canonical_key=_canonical_key(head.get("name", ""), head.get("artist", "")),
+                canonical_key=canonical_key(head.get("name", ""), head.get("artist", "")),
                 name=head.get("name", "") or head.get("ne_name", "") or head.get("qq_name", "") or "",
                 artist=head.get("artist", "") or head.get("ne_artist", "") or head.get("qq_artist", "") or "",
                 album=head.get("album") or None,

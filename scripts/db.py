@@ -141,11 +141,6 @@ def upsert_song(
     return cur.lastrowid
 
 
-def get_song(conn: sqlite3.Connection, song_id: int) -> Optional[sqlite3.Row]:
-    cur = conn.execute("SELECT * FROM songs WHERE id=?", (song_id,))
-    return cur.fetchone()
-
-
 def get_song_by_canonical(conn: sqlite3.Connection, canonical_key: str) -> list[sqlite3.Row]:
     cur = conn.execute(
         "SELECT * FROM songs WHERE canonical_key=? ORDER BY id", (canonical_key,)
@@ -219,26 +214,6 @@ def get_links_for_song(conn: sqlite3.Connection, song_id: int) -> list[sqlite3.R
         "SELECT * FROM platform_links WHERE song_id=? ORDER BY platform", (song_id,)
     )
     return cur.fetchall()
-
-
-def get_links_for_platform(conn: sqlite3.Connection, platform: str,
-                           liked_only: bool = True) -> list[sqlite3.Row]:
-    sql = "SELECT * FROM platform_links WHERE platform=?"
-    params: tuple = (platform,)
-    if liked_only:
-        sql += " AND liked=1"
-    cur = conn.execute(sql, params)
-    return cur.fetchall()
-
-
-def set_link_liked(conn: sqlite3.Connection, link_id: int, liked: int,
-                   synced_at: Optional[str] = None) -> None:
-    conn.execute(
-        "UPDATE platform_links SET liked=?, synced_at=COALESCE(?, synced_at), updated_at=? "
-        "WHERE id=?",
-        (liked, synced_at, now_iso(), link_id),
-    )
-    conn.commit()
 
 
 # --- lyrics_cache helpers (autocommit-style separate conn recommended) ---

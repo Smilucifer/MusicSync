@@ -100,14 +100,12 @@ def diff_vs_db(
     ne_seen: set[str],
     qq_seen: set[str],
 ) -> dict:
-    """Return three lists keyed by category:
+    """Return two lists keyed by category:
        single_side_songs: list of (song_id, present_platform, other_platform)
        user_unliked_links: list of (link_id, platform, platform_track_id)
-       healthy_pairs: list of song_id (informational)
     """
     single_side: list[tuple] = []
     unliked: list[tuple] = []
-    healthy: list[int] = []
 
     cur = conn.execute("SELECT id FROM songs ORDER BY id")
     for srow in cur.fetchall():
@@ -120,7 +118,7 @@ def diff_vs_db(
             ne_present = ne_link["platform_track_id"] in ne_seen
             qq_present = qq_link["platform_track_id"] in qq_seen
             if ne_present and qq_present:
-                healthy.append(sid)
+                pass  # healthy — no action
             elif ne_present and not qq_present:
                 unliked.append((qq_link["id"], "qq", qq_link["platform_track_id"]))
                 # 反向：用户 unlike QQ → 也要 unlike Ne
@@ -136,7 +134,7 @@ def diff_vs_db(
             single_side.append((sid, "netease", "qq"))
         elif "qq" in link_by_plat:
             single_side.append((sid, "qq", "netease"))
-    return {"single_side": single_side, "unliked": unliked, "healthy": healthy}
+    return {"single_side": single_side, "unliked": unliked}
 
 
 def _fetch_lyrics_cached(conn, api, platform: str, tid: str) -> tuple[str, str]:
@@ -158,8 +156,8 @@ def match_unlinked(
 ) -> list[dict]:
     """Step 5: for each one-sided song, search the other platform and try L1→L2→L3.
 
-    Returns a list of dicts describing each attempt: {song_id, status, target_platform,
-    matched_track_id, level} where status in (matched, unmatched, conflict_skipped).
+    Returns a list of {song_id, status} dicts. status in (matched, unmatched,
+    conflict_skipped, deferred, aborted_rate_limit).
 
     On match success: creates the missing platform_link with liked=0/synced_at=NULL
     (Step 8 will flip liked=1 + set synced_at after API ADD succeeds).
@@ -173,8 +171,7 @@ def match_unlinked(
 
     for sid, present, target in single_side:
         if target == "netease" and reverse_batch and ne_search_count >= reverse_batch:
-            results.append({"song_id": sid, "status": "deferred",
-                            "target_platform": target})
+            results.append({"song_id": sid, "status": "deferred"})
             continue
         present_link = next(
             (l for l in get_links_for_song(conn, sid)
@@ -213,8 +210,7 @@ def match_unlinked(
                 if netease_http_strikes >= NETEASE_STRIKE_LIMIT:
                     print(f"  ABORT: {netease_http_strikes} consecutive NetEase HTTP errors "
                           f"— stopping match_unlinked to avoid IP ban")
-                    results.append({"song_id": sid, "status": "aborted_rate_limit",
-                                    "target_platform": target})
+                    results.append({"song_id": sid, "status": "aborted_rate_limit"})
                     break
         except Exception as e:
             print(f"  search failed for sid={sid}: {e}")
@@ -237,8 +233,7 @@ def match_unlinked(
 
         match, level = find_match_in_candidates(source, enriched)
         if match is None:
-            results.append({"song_id": sid, "status": "unmatched",
-                            "target_platform": target})
+            results.append({"song_id": sid, "status": "unmatched"})
             update_match_source(conn, sid, "unmatched")
             continue
 
@@ -250,8 +245,7 @@ def match_unlinked(
         if conflict is not None:
             print(f"  WARN: {target}:{match['id']} already linked to song {conflict}, "
                   f"skipping candidate for song {sid}")
-            results.append({"song_id": sid, "status": "conflict_skipped",
-                            "target_platform": target, "matched_track_id": str(match["id"])})
+            results.append({"song_id": sid, "status": "conflict_skipped"})
             update_match_source(conn, sid, "unmatched")
             continue
 
@@ -266,9 +260,7 @@ def match_unlinked(
         )
         update_match_source(conn, sid, {"L1": "l1_isrc", "L2": "l2_lyrics",
                                         "L3": "l3_name_artist"}[level])
-        results.append({"song_id": sid, "status": "matched",
-                        "target_platform": target, "matched_track_id": str(match["id"]),
-                        "level": level})
+        results.append({"song_id": sid, "status": "matched"})
     return results
 
 
@@ -351,6 +343,7 @@ def execute_plan(
     if not cleanup_skipped:
         for link_id, platform, tid in unliked:
             api = ne_api if platform == "netease" else qq_api
+            abbrev = "ne" if platform == "netease" else "qq"
             try:
                 ok = api.remove_from_liked(tid)
             except Exception as e:
@@ -362,9 +355,9 @@ def execute_plan(
                     (now_iso(), link_id),
                 )
                 conn.commit()
-                counts[f"unlike_{platform if platform == 'qq' else 'ne'}_ok"] += 1
+                counts[f"unlike_{abbrev}_ok"] += 1
             else:
-                counts[f"unlike_{platform if platform == 'qq' else 'ne'}_fail"] += 1
+                counts[f"unlike_{abbrev}_fail"] += 1
     return counts
 
 

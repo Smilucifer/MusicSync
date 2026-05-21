@@ -219,7 +219,7 @@ def test_l3_with_single_candidate_matches():
         {"id": "c1", "name": "Eclipse", "artist": "Aimer", "album": "Plenty"},
         {"id": "c2", "name": "DEEP", "artist": "Aimer", "album": "Sun Dance"},
     ]
-    matched, level = find_match_in_candidates(ne, candidates, allow_l3=True)
+    matched, level = find_match_in_candidates(ne, candidates)
     assert level == "L3"
     assert matched["id"] == "c1"
 
@@ -231,7 +231,7 @@ def test_l3_with_multiple_same_canonical_skips():
         {"id": "a", "name": "Tell me", "artist": "milet", "album": "Prover"},
         {"id": "b", "name": "Tell me", "artist": "milet", "album": "eyes"},
     ]
-    matched, level = find_match_in_candidates(ne, candidates, allow_l3=True)
+    matched, level = find_match_in_candidates(ne, candidates)
     assert matched is None
     assert level == ""
 

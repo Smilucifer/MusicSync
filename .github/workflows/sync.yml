@@ -80,14 +80,14 @@ jobs:
         run: python scripts/sync.py
 
       - name: Save SQLite DB
-        if: github.event.inputs.dry_run != 'true'
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false'
         uses: actions/cache/save@v4
         with:
           path: data/musicsync.db
           key: musicsync-db-${{ github.run_id }}
 
       - name: Commit snapshot CSV
-        if: github.event.inputs.dry_run != 'true'
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false'
         run: |
           git config user.email "actions@github.com"
           git config user.name "github-actions"

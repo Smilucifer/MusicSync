@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 from db import (
     init_db, connect,
     upsert_song, upsert_platform_link,
-    get_song_by_canonical, get_link, get_links_for_platform,
+    get_song_by_canonical, get_link,
     set_meta, get_meta,
 )
 

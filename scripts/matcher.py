@@ -210,27 +210,21 @@ def match_l3(a: dict, b: dict) -> bool:
 def find_match_in_candidates(
     source: dict,
     candidates: list[dict],
-    allow_l1: bool = True,
-    allow_l2: bool = True,
-    allow_l3: bool = True,
 ) -> tuple[Optional[dict], str]:
-    if allow_l1:
-        for c in candidates:
-            if match_l1(source, c):
-                return c, "L1"
-    if allow_l2:
-        for c in candidates:
-            if match_l2(source, c):
-                return c, "L2"
-    if allow_l3:
-        src_ck = canonical_key(source.get("name", ""), source.get("artist", ""))
-        same_ck = [c for c in candidates
-                   if canonical_key(c.get("name", ""), c.get("artist", "")) == src_ck]
-        if len(same_ck) >= 2:
-            return None, ""
-        for c in candidates:
-            if match_l3(source, c):
-                return c, "L3"
+    for c in candidates:
+        if match_l1(source, c):
+            return c, "L1"
+    for c in candidates:
+        if match_l2(source, c):
+            return c, "L2"
+    src_ck = canonical_key(source.get("name", ""), source.get("artist", ""))
+    same_ck = [c for c in candidates
+               if canonical_key(c.get("name", ""), c.get("artist", "")) == src_ck]
+    if len(same_ck) >= 2:
+        return None, ""
+    for c in candidates:
+        if match_l3(source, c):
+            return c, "L3"
     return None, ""
 
 
