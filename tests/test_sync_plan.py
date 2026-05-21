@@ -162,6 +162,8 @@ def test_match_unlinked_and_execute_creates_add_action():
     """Step 5→6→8 happy path: single-side song matches via L3, ADD fires, FakeAPI records it."""
     fd, db = tempfile.mkstemp(suffix=".db")
     os.close(fd)
+    fd2, snap = tempfile.mkstemp(suffix=".csv")
+    os.close(fd2)
     try:
         init_db(db)
         with connect(db) as conn:
@@ -175,7 +177,6 @@ def test_match_unlinked_and_execute_creates_add_action():
             set_meta(conn, "last_sync_at", "2026-05-20T00:00:00+00:00")
 
         ne = FakeAPI([{"id": "ne1", "name": "Solo", "artist": "Artist", "album": ""}])
-        # QQ search for "Solo Artist" returns one candidate that L3 will match
         qq = FakeAPI(
             tracks=[],
             search_results={
@@ -184,15 +185,15 @@ def test_match_unlinked_and_execute_creates_add_action():
         )
         result = sync.run_pipeline(
             ne, qq, db_path=db, dry_run=False,
-            force_full_sync=True,  # 跳过 fetch sanity (db has 1 ne link, fetch has 1 → 0% drop ok 但保险起见)
+            force_full_sync=True,
+            snapshot_path=snap,
         )
-        # FakeAPI.adds should contain the qq track id our matcher wired up
         assert "qq_new" in qq.adds, f"expected qq_new in qq.adds, got {qq.adds}"
-        # No QQ-side tracks were fetched, so no unlikes should be queued (NE has the song, QQ doesn't)
-        # cleanup_skipped should be True (force_full_sync)
         assert result.get("cleanup_skipped") is True
     finally:
         os.unlink(db)
+        if os.path.exists(snap):
+            os.unlink(snap)
 
 
 if __name__ == "__main__":

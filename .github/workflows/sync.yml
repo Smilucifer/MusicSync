@@ -52,21 +52,19 @@ jobs:
           sleep 10
           curl -s http://localhost:3000/login/status || exit 1
 
-      - name: Restore sync state
-        id: restore-state
+      - name: Restore SQLite DB
+        id: restore-db
         uses: actions/cache/restore@v4
         with:
-          path: state/sync_state.json
-          key: sync-state
-          restore-keys: sync-state
+          path: data/musicsync.db
+          key: musicsync-db-${{ github.run_id }}
+          restore-keys: musicsync-db-
 
-      - name: Restore CSV database
-        id: restore-csv
-        uses: actions/cache/restore@v4
-        with:
-          path: csv/song_mappings.csv
-          key: csv-db
-          restore-keys: csv-db
+      - name: Bootstrap DB from snapshot if missing
+        run: |
+          if [ ! -f data/musicsync.db ]; then
+            python scripts/bootstrap_db_from_snapshot.py
+          fi
 
       - name: Run sync
         env:
@@ -81,16 +79,22 @@ jobs:
           REVERSE_BATCH: '25'
         run: python scripts/sync.py
 
-      - name: Save sync state
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: state/sync_state.json
-          key: sync-state-${{ github.run_id }}
-
-      - name: Save CSV database
+      - name: Save SQLite DB
         if: github.event.inputs.dry_run != 'true'
         uses: actions/cache/save@v4
         with:
-          path: csv/song_mappings.csv
-          key: csv-db-${{ github.run_id }}
+          path: data/musicsync.db
+          key: musicsync-db-${{ github.run_id }}
+
+      - name: Commit snapshot CSV
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+          git add csv/song_mappings_snapshot.csv
+          if git diff --cached --quiet; then
+            echo "no snapshot changes"
+          else
+            git commit -m "data: sync snapshot $(date -u +%FT%TZ)"
+            git push
+          fi

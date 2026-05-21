@@ -393,6 +393,7 @@ def run_pipeline(
     dry_run: bool = True,
     reverse_batch: int = 0,
     force_full_sync: bool = False,
+    snapshot_path: str | os.PathLike | None = None,
 ) -> dict:
     """Single entry — runnable from tests with fake APIs."""
     # Use local variable — don't mutate module global (avoids test state leakage)
@@ -463,9 +464,9 @@ def run_pipeline(
         )
 
         # Step 9: snapshot + meta
-        snapshot_path = ROOT / "csv" / "song_mappings_snapshot.csv"
-        n = dump_snapshot(conn, snapshot_path)
-        print(f"Snapshot: {n} rows → {snapshot_path}")
+        snap_path = Path(snapshot_path) if snapshot_path else ROOT / "csv" / "song_mappings_snapshot.csv"
+        n = dump_snapshot(conn, snap_path)
+        print(f"Snapshot: {n} rows → {snap_path}")
         set_meta(conn, "last_sync_at", now_iso())
 
     return summary

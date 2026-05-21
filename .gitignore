@@ -5,3 +5,4 @@ __pycache__/
 .superpowers/
 csv/cookies.csv
 .venv/
+data/
