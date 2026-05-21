@@ -62,6 +62,10 @@ def bootstrap(snapshot_path: str, db_path: str) -> dict:
 def main(argv: list[str]) -> int:
     snapshot = argv[1] if len(argv) > 1 else str(ROOT / "csv" / "song_mappings_snapshot.csv")
     db_path = argv[2] if len(argv) > 2 else str(ROOT / "data" / "musicsync.db")
+    if Path(db_path).exists():
+        print(f"FAIL: {db_path} already exists — refusing to overwrite. "
+              f"Delete it first if you really want to re-bootstrap.")
+        return 1
     if not Path(snapshot).exists():
         print(f"FAIL: snapshot {snapshot} not found — first-time deploy must run migrate_csv_to_db.py locally first")
         return 1

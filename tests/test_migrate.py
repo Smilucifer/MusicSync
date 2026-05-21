@@ -129,6 +129,28 @@ def test_summary_dict_shape():
         os.unlink(db)
 
 
+def test_bootstrap_refuses_to_overwrite_existing_db():
+    """bootstrap_db_from_snapshot.main() must not silently overwrite a populated DB."""
+    from bootstrap_db_from_snapshot import main as bootstrap_main
+    fd, db = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    fd2, snap = tempfile.mkstemp(suffix=".csv")
+    os.close(fd2)
+    try:
+        # Pre-populate via migrate so the DB is real
+        os.unlink(db)
+        migrate_csv(str(FIXTURE), db)
+        with open(snap, "w", encoding="utf-8-sig", newline="") as f:
+            f.write("song_id,canonical_key,name,artist,album,"
+                    "ne_track_id,ne_liked,ne_synced_at,"
+                    "qq_track_id,qq_liked,qq_synced_at,match_source\n")
+        rc = bootstrap_main(["bootstrap", snap, db])
+        assert rc == 1, f"expected refusal exit code 1, got {rc}"
+    finally:
+        os.unlink(db)
+        os.unlink(snap)
+
+
 if __name__ == "__main__":
     test_a2_distinct_album_versions_kept_separate()
     test_a1_same_qq_id_merged_into_one_song()
@@ -137,4 +159,5 @@ if __name__ == "__main__":
     test_non_manual_records_original_match_source()
     test_no_duplicate_platform_track_id()
     test_summary_dict_shape()
+    test_bootstrap_refuses_to_overwrite_existing_db()
     print("ALL OK")

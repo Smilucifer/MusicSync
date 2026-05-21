@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import requests
+
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -166,6 +168,8 @@ def match_unlinked(
     ne_search_count = 0
     qq_search_count = 0
     netease_warmed = False
+    netease_http_strikes = 0
+    NETEASE_STRIKE_LIMIT = 3
 
     for sid, present, target in single_side:
         if target == "netease" and reverse_batch and ne_search_count >= reverse_batch:
@@ -201,9 +205,23 @@ def match_unlinked(
             netease_warmed = True
         try:
             candidates = target_api.search(keyword, limit=10)
+        except requests.HTTPError as e:
+            print(f"  search HTTPError for sid={sid}: {e}")
+            candidates = []
+            if target == "netease":
+                netease_http_strikes += 1
+                if netease_http_strikes >= NETEASE_STRIKE_LIMIT:
+                    print(f"  ABORT: {netease_http_strikes} consecutive NetEase HTTP errors "
+                          f"— stopping match_unlinked to avoid IP ban")
+                    results.append({"song_id": sid, "status": "aborted_rate_limit",
+                                    "target_platform": target})
+                    break
         except Exception as e:
             print(f"  search failed for sid={sid}: {e}")
             candidates = []
+        else:
+            if target == "netease":
+                netease_http_strikes = 0
         if target == "netease":
             ne_search_count += 1
             time.sleep(NETEASE_SEARCH_INTERVAL)
