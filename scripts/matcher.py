@@ -13,10 +13,37 @@ import re
 import sqlite3
 from typing import Optional
 
+import opencc
+
 from db import (
     get_song_by_canonical, get_link, upsert_song, upsert_platform_link,
 )
 
+_t2s = opencc.OpenCC('t2s')
+
+# Artist alias mapping: variant → canonical form.
+# Applied after opencc normalization in clean_artist().
+# Covers Japanese↔Chinese readings, stage names, and romanization variants.
+ARTIST_ALIASES: dict[str, str] = {
+    # --- Japanese readings → Chinese (after opencc) ---
+    "林ゆうき": "林友树",
+    "山崎まさよし": "山崎将义",
+    "铃木このみ": "铃木木乃美",
+    "铃华ゆう子": "铃华优子",   # opencc: 鈴華→铃华, ゆう子 stays hiragana
+    # --- Japanese → English romanization ---
+    "ハンバートハンバート": "humbert humbert",
+    "ステレオポニー": "stereopony",
+    # --- Stage names → real names ---
+    "贰婶": "蔡翊升",
+    "千月兔": "织梦令",
+    # --- Collaboration / vocaloid credits ---
+    "初音ミク": "ryo/supercell",
+    "supercell": "ryo/supercell",
+    # --- Romanization → Chinese name ---
+    "hiroyukisawano": "泽野弘之",
+    # --- Artist group ↔ member ---
+    "dish//": "北村匠海",
+}
 
 SHORT_LYRICS_THRESHOLD = 100
 L2_DURATION_TOLERANCE = 15
@@ -26,14 +53,54 @@ L2_LYRICS_SIMILARITY = 0.6
 
 # --- Normalization ---
 
+def _is_version_qualifier(text: str) -> bool:
+    """Return True if parenthetical content identifies a distinct song version."""
+    t = text.strip().lower()
+    if not t:
+        return False
+    # Exact match qualifiers
+    _EXACT = {
+        "live", "acoustic", "unplugged", "remix", "remastered",
+        "instrumental", "cover", "demo",
+        "中文版", "日文版", "韩文版", "英文版",
+        "国语版", "粤语版", "纯音乐", "伴奏",
+    }
+    if t in _EXACT:
+        return True
+    _CONTAINS = [
+        " ver", "version", "mix", "edit", "live ", "remix",
+        "size", "电影版", "动画版", "剧场版",
+    ]
+    return any(kw in t for kw in _CONTAINS)
+
+
+def _strip_paren(text: str, open_ch: str, close_ch: str) -> str:
+    """Strip parenthetical groups, keeping version qualifiers."""
+    result = []
+    i = 0
+    while i < len(text):
+        if text[i] == open_ch:
+            end = text.find(close_ch, i + 1)
+            if end == -1:
+                break
+            inner = text[i + 1:end]
+            if _is_version_qualifier(inner):
+                result.append(inner.strip())
+            i = end + 1
+        else:
+            result.append(text[i])
+            i += 1
+    return "".join(result)
+
+
 def clean_name(name: str) -> str:
     if not name:
         return ""
     n = str(name)
-    n = re.sub(r"\([^)]*\)", "", n)
-    n = re.sub(r"\[[^\]]*\]", "", n)
-    n = re.sub(r"（[^）]*）", "", n)
-    n = re.sub(r"【[^】]*】", "", n)
+    n = _strip_paren(n, "(", ")")
+    n = _strip_paren(n, "[", "]")
+    n = _strip_paren(n, "（", "）")
+    n = _strip_paren(n, "【", "】")
     n = n.replace(" - ", " ").replace(" – ", " ")
     n = n.replace("／", "/").replace("：", ":")
     n = re.sub(r"\s+", " ", n).strip()
@@ -43,7 +110,12 @@ def clean_name(name: str) -> str:
 def clean_artist(artist: str) -> str:
     if not artist:
         return ""
-    return str(artist).strip().lower()
+    a = str(artist).strip()
+    a = _t2s.convert(a)
+    a = re.sub(r"[（(][^）)]*[）)]", "", a)
+    a = re.sub(r"\s+", "", a)
+    a = a.lower()
+    return ARTIST_ALIASES.get(a, a)
 
 
 def canonical_key(name: str, artist: str) -> str:

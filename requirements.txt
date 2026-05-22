@@ -2,3 +2,4 @@ python-dotenv==1.1.0
 pycryptodome==3.22.0
 requests>=2.31.0
 qqmusic-api-python>=0.6.0
+opencc-python-reimplemented>=0.1.7
