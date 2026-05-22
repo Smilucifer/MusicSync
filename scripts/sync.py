@@ -488,26 +488,6 @@ def run_pipeline(
                 )
             conn.commit()
 
-        # Step 4.7: cleanup orphan songs (no liked=1 on either side)
-        orphan_ids = conn.execute("""
-            SELECT s.id FROM songs s
-            WHERE s.deleted_at IS NULL
-            AND NOT EXISTS (
-                SELECT 1 FROM platform_links WHERE song_id=s.id AND liked=1
-            )
-        """).fetchall()
-        orphan_ids = [r["id"] for r in orphan_ids]
-        summary["orphan_songs_cleaned"] = len(orphan_ids)
-        if orphan_ids:
-            print(f"Orphan songs (no liked links): {len(orphan_ids)}")
-            if not dry_run:
-                ts = now_iso()
-                conn.executemany(
-                    "UPDATE songs SET deleted_at=?, updated_at=? WHERE id=?",
-                    [(ts, ts, sid) for sid in orphan_ids],
-                )
-                conn.commit()
-
         # Step 6: plan
         local_only_link_ids = {lid for lid, _p, _t in local_unlikes}
         plan = build_plan(conn, diff["unliked"],
@@ -539,6 +519,26 @@ def run_pipeline(
             conn, ne_api, qq_api, plan, diff["unliked"],
             cleanup_skipped=cleanup_skipped,
         )
+
+        # Step 8.5: cleanup orphan songs (after execute, so newly created orphans are caught)
+        orphan_ids = conn.execute("""
+            SELECT s.id FROM songs s
+            WHERE s.deleted_at IS NULL
+            AND NOT EXISTS (
+                SELECT 1 FROM platform_links WHERE song_id=s.id AND liked=1
+            )
+        """).fetchall()
+        orphan_ids = [r["id"] for r in orphan_ids]
+        summary["orphan_songs_cleaned"] = len(orphan_ids)
+        if orphan_ids:
+            print(f"Orphan songs (no liked links): {len(orphan_ids)}")
+            if not dry_run:
+                ts = now_iso()
+                conn.executemany(
+                    "UPDATE songs SET deleted_at=?, updated_at=? WHERE id=?",
+                    [(ts, ts, sid) for sid in orphan_ids],
+                )
+                conn.commit()
 
         # Step 9: snapshot + meta
         snap_path = Path(snapshot_path) if snapshot_path else ROOT / "csv" / "song_mappings_snapshot.csv"
