@@ -7,7 +7,71 @@ from pathlib import Path
 from typing import Optional
 
 
-SCHEMA = """
+SCHEMA_V2 = """
+PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+
+CREATE TABLE IF NOT EXISTS songs (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    canonical_key          TEXT NOT NULL,
+    name                   TEXT NOT NULL,
+    artist                 TEXT NOT NULL,
+    album                  TEXT,
+    match_source           TEXT NOT NULL CHECK(match_source IN
+                           ('manual','l0_canonical','l1_isrc','l2_lyrics',
+                            'l3_name_artist','unmatched','migrated','manual_merged')),
+    original_match_source  TEXT,
+    created_at             TEXT NOT NULL,
+    updated_at             TEXT NOT NULL,
+    deleted_at             TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_songs_canonical ON songs(canonical_key);
+
+CREATE TABLE IF NOT EXISTS platform_links (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    song_id           INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
+    platform          TEXT NOT NULL CHECK(platform IN ('netease','qq')),
+    platform_track_id TEXT NOT NULL,
+    platform_name     TEXT,
+    platform_artist   TEXT,
+    platform_album    TEXT,
+    liked             INTEGER NOT NULL DEFAULT 1 CHECK(liked IN (0,1)),
+    synced_at         TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE (platform, platform_track_id)
+);
+CREATE INDEX IF NOT EXISTS idx_links_song_platform ON platform_links(song_id, platform);
+CREATE INDEX IF NOT EXISTS idx_links_liked ON platform_links(platform, liked);
+
+CREATE TABLE IF NOT EXISTS lyrics_cache (
+    platform          TEXT NOT NULL CHECK(platform IN ('netease','qq')),
+    platform_track_id TEXT NOT NULL,
+    original          TEXT,
+    translated        TEXT,
+    cached_at         TEXT NOT NULL,
+    PRIMARY KEY (platform, platform_track_id)
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS merge_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_song_id  INTEGER NOT NULL,
+    target_song_id  INTEGER NOT NULL,
+    source_payload  TEXT NOT NULL,
+    source_links    TEXT NOT NULL,
+    merged_at       TEXT NOT NULL,
+    note            TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_merge_log_target ON merge_log(target_song_id);
+"""
+
+# V1 schema kept for migration reference
+SCHEMA_V1 = """
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
@@ -57,7 +121,8 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 """
 
-SCHEMA_VERSION = "1"
+SCHEMA = SCHEMA_V2  # current version
+SCHEMA_VERSION = "2"
 
 
 def default_db_path() -> Path:
@@ -75,21 +140,80 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """v1 → v2: songs gains deleted_at + manual_merged CHECK; new merge_log table."""
+    conn.execute("PRAGMA foreign_keys = OFF")
+    # Rebuild songs table with new CHECK constraint + deleted_at column
+    conn.execute("CREATE TABLE songs_backup AS SELECT * FROM songs")
+    conn.execute("DROP TABLE songs")
+    conn.execute("""CREATE TABLE songs (
+        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+        canonical_key          TEXT NOT NULL,
+        name                   TEXT NOT NULL,
+        artist                 TEXT NOT NULL,
+        album                  TEXT,
+        match_source           TEXT NOT NULL CHECK(match_source IN
+                               ('manual','l0_canonical','l1_isrc','l2_lyrics',
+                                'l3_name_artist','unmatched','migrated','manual_merged')),
+        original_match_source  TEXT,
+        created_at             TEXT NOT NULL,
+        updated_at             TEXT NOT NULL,
+        deleted_at             TEXT
+    )""")
+    conn.execute("INSERT INTO songs SELECT *, NULL FROM songs_backup")
+    conn.execute("DROP TABLE songs_backup")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_songs_canonical ON songs(canonical_key)")
+    # Add merge_log table
+    conn.execute("""CREATE TABLE IF NOT EXISTS merge_log (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_song_id  INTEGER NOT NULL,
+        target_song_id  INTEGER NOT NULL,
+        source_payload  TEXT NOT NULL,
+        source_links    TEXT NOT NULL,
+        merged_at       TEXT NOT NULL,
+        note            TEXT
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_merge_log_target ON merge_log(target_song_id)")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("UPDATE meta SET value='2' WHERE key='schema_version'")
+
+
 def init_db(path: str | os.PathLike) -> None:
-    """Create schema if missing. Idempotent."""
+    """Create schema if missing. Migrate if needed. Idempotent."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(p))
     try:
-        conn.executescript(SCHEMA)
-        conn.commit()
-        cur = conn.execute("SELECT value FROM meta WHERE key='schema_version'")
-        if cur.fetchone() is None:
+        # Check if meta table exists (fresh DB won't have it)
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='meta'"
+        )
+        has_meta = cur.fetchone() is not None
+
+        if not has_meta:
+            # Fresh DB — create v2 schema + set version
+            conn.executescript(SCHEMA_V2)
             conn.execute(
-                "INSERT INTO meta(key, value) VALUES ('schema_version', ?)",
-                (SCHEMA_VERSION,),
+                "INSERT INTO meta(key, value) VALUES ('schema_version', '2')"
             )
             conn.commit()
+        else:
+            cur = conn.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            )
+            row = cur.fetchone()
+            ver = row[0] if row else None
+
+            if ver == "1":
+                # Migrate v1 → v2
+                migrate_v1_to_v2(conn)
+                conn.commit()
+            elif ver == "2":
+                # Already current — ensure all tables exist (idempotent)
+                conn.executescript(SCHEMA_V2)
+                conn.commit()
+            else:
+                raise RuntimeError(f"Unknown schema_version: {ver}")
     finally:
         conn.close()
 
@@ -143,7 +267,8 @@ def upsert_song(
 
 def get_song_by_canonical(conn: sqlite3.Connection, canonical_key: str) -> list[sqlite3.Row]:
     cur = conn.execute(
-        "SELECT * FROM songs WHERE canonical_key=? ORDER BY id", (canonical_key,)
+        "SELECT * FROM songs WHERE canonical_key=? AND deleted_at IS NULL ORDER BY id",
+        (canonical_key,),
     )
     return cur.fetchall()
 

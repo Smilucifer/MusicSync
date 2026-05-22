@@ -172,6 +172,73 @@ def test_meta_set_and_get():
         os.unlink(path)
 
 
+def test_init_db_creates_merge_log_table():
+    path = _temp_db()
+    try:
+        init_db(path)
+        with connect(path) as conn:
+            cur = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='merge_log'"
+            )
+            assert cur.fetchone() is not None, "merge_log table not created"
+            # Verify columns
+            cur = conn.execute("PRAGMA table_info(merge_log)")
+            cols = {r["name"] for r in cur.fetchall()}
+            assert "source_song_id" in cols
+            assert "target_song_id" in cols
+            assert "source_payload" in cols
+            assert "source_links" in cols
+            assert "merged_at" in cols
+            assert "note" in cols
+            # Verify index
+            cur = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_merge_log_target'"
+            )
+            assert cur.fetchone() is not None
+    finally:
+        os.unlink(path)
+
+
+def test_init_db_migration_v2_adds_deleted_at():
+    """Schema v1 → v2 migration: songs table gains deleted_at column."""
+    path = _temp_db()
+    try:
+        init_db(path)
+        with connect(path) as conn:
+            cur = conn.execute("PRAGMA table_info(songs)")
+            cols = {r["name"] for r in cur.fetchall()}
+            assert "deleted_at" in cols, "deleted_at column not added"
+            # Verify CHECK constraint includes manual_merged
+            cur = conn.execute("SELECT sql FROM sqlite_master WHERE name='songs'")
+            sql = cur.fetchone()["sql"]
+            assert "manual_merged" in sql
+    finally:
+        os.unlink(path)
+
+
+def test_init_db_migration_preserves_existing_data():
+    """Migration must not lose existing songs/links."""
+    path = _temp_db()
+    try:
+        init_db(path)
+        with connect(path) as conn:
+            sid = upsert_song(conn, canonical_key="x|y", name="X", artist="Y",
+                              album="A", match_source="manual")
+            upsert_platform_link(conn, song_id=sid, platform="qq",
+                                 platform_track_id="100", liked=1)
+        # Re-run init_db (simulates app restart with existing data)
+        init_db(path)
+        with connect(path) as conn:
+            songs = conn.execute("SELECT * FROM songs").fetchall()
+            assert len(songs) == 1
+            assert songs[0]["name"] == "X"
+            links = conn.execute("SELECT * FROM platform_links").fetchall()
+            assert len(links) == 1
+            assert links[0]["platform_track_id"] == "100"
+    finally:
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     test_init_creates_all_tables()
     test_foreign_keys_enabled()
@@ -181,4 +248,7 @@ if __name__ == "__main__":
     test_upsert_platform_link_updates_on_conflict()
     test_upsert_platform_link_preserves_synced_at_when_none()
     test_meta_set_and_get()
+    test_init_db_creates_merge_log_table()
+    test_init_db_migration_v2_adds_deleted_at()
+    test_init_db_migration_preserves_existing_data()
     print("ALL OK")
