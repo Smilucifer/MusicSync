@@ -37,6 +37,7 @@ from db import (
     get_meta, set_meta, now_iso,
     get_lyrics, put_lyrics,
     update_match_source,
+    cleanup_orphan_songs,
 )
 from matcher import (
     l0_canonicalize, find_match_in_candidates, check_link_conflict,
@@ -486,6 +487,26 @@ def run_pipeline(
                     (ts, link_id),
                 )
             conn.commit()
+
+        # Step 4.7: cleanup orphan songs (no liked=1 on either side)
+        orphan_ids = conn.execute("""
+            SELECT s.id FROM songs s
+            WHERE s.deleted_at IS NULL
+            AND NOT EXISTS (
+                SELECT 1 FROM platform_links WHERE song_id=s.id AND liked=1
+            )
+        """).fetchall()
+        orphan_ids = [r["id"] for r in orphan_ids]
+        summary["orphan_songs_cleaned"] = len(orphan_ids)
+        if orphan_ids:
+            print(f"Orphan songs (no liked links): {len(orphan_ids)}")
+            if not dry_run:
+                ts = now_iso()
+                conn.executemany(
+                    "UPDATE songs SET deleted_at=?, updated_at=? WHERE id=?",
+                    [(ts, ts, sid) for sid in orphan_ids],
+                )
+                conn.commit()
 
         # Step 6: plan
         local_only_link_ids = {lid for lid, _p, _t in local_unlikes}

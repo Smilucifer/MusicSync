@@ -369,6 +369,32 @@ def put_lyrics(conn: sqlite3.Connection, platform: str, platform_track_id: str,
     conn.commit()
 
 
+# --- Cleanup helpers ---
+
+def cleanup_orphan_songs(conn: sqlite3.Connection) -> list[int]:
+    """Soft-delete songs that have no liked=1 links on any platform.
+
+    Returns list of soft-deleted song IDs.
+    """
+    cur = conn.execute("""
+        SELECT s.id FROM songs s
+        WHERE s.deleted_at IS NULL
+        AND NOT EXISTS (
+            SELECT 1 FROM platform_links WHERE song_id=s.id AND liked=1
+        )
+    """)
+    ids = [r["id"] for r in cur.fetchall()]
+    if not ids:
+        return []
+    ts = now_iso()
+    conn.executemany(
+        "UPDATE songs SET deleted_at=?, updated_at=? WHERE id=?",
+        [(ts, ts, sid) for sid in ids],
+    )
+    conn.commit()
+    return ids
+
+
 # --- meta helpers ---
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
