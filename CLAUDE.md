@@ -56,7 +56,7 @@ There is **no lint/format/build configuration** — don't add one without asking
 2. **Fetch** — pull current liked-songs lists from both platforms.
 2.5. **Sanity check** — abort if `(db_liked - fetched) / db_liked > FETCH_DROP_THRESHOLD` (default 15%). Skipped on first run or with `FORCE_FULL_SYNC`.
 3. **Canonicalize (L0)** — UPSERT every fetched track into `songs` + `platform_links`. Uses `canonical_key` to attach to existing primary song; otherwise creates a new song.
-4. **Diff vs DB** — categorize every song into healthy / single-side / user-unliked.
+4. **Diff vs DB** — categorize every song into healthy / single-side / user-unliked / local-only-unlike.
 5. **Match unlinked** — for each one-sided song, search the other platform; try L1→L2→L3; pre-check `UNIQUE(platform, platform_track_id)` conflict before inserting the pending link.
 6. **Plan** — collect ADD_NE / ADD_QQ / UNLIKE_NE / UNLIKE_QQ action lists.
 7. **Safety gate** — if `unlike_count > UNLIKE_ABORT_THRESHOLD` or `FORCE_FULL_SYNC`, skip cleanup (ADDs still execute).
@@ -71,6 +71,7 @@ There is **no lint/format/build configuration** — don't add one without asking
 - `platform_links(id, song_id, platform, platform_track_id, platform_name, platform_artist, platform_album, liked, synced_at, created_at, updated_at, UNIQUE(platform, platform_track_id))` — UNIQUE prevents the same external track from being claimed by two songs.
 - `lyrics_cache` — keyed by `(platform, platform_track_id)`; replaces the old in-memory `state.json` cache.
 - `meta(key, value)` — currently holds `last_sync_at`.
+- `merge_log` — audit trail for song merges: `source_payload` (JSON snapshot of source song) + `source_links` (JSON snapshot of source's platform_links). Indexed on `target_song_id`.
 
 CI persists the DB via Actions Cache v4. The `csv/song_mappings_snapshot.csv` written at Step 9 is committed by the workflow when `dry_run=false` and is the bootstrap source if the cache is cold (see `scripts/bootstrap_db_from_snapshot.py`).
 
@@ -102,6 +103,7 @@ NetEase search is the chokepoint. Short-window 405 responses → cookie marked �
 - `scripts/sync.py` reconfigures stdout to UTF-8 on Windows (`sys.stdout.reconfigure`) — necessary for printing CJK track names on the default `cp936` console.
 - `match_unlinked` returns `{song_id, status}` only. `status` ∈ `{matched, unmatched, conflict_skipped, deferred, aborted_rate_limit}`.
 - Tests use temp DBs (`tempfile.mkstemp`); never touch `data/musicsync.db`.
+- Merge is a single atomic transaction via `scripts/merge.py:execute_merge`. Audit trail in `merge_log` table. Source songs are soft-deleted (`deleted_at`), not hard-deleted.
 
 ## When making changes
 

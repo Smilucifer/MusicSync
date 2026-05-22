@@ -39,6 +39,7 @@ platform_links(id, song_id, platform, platform_track_id, platform_name, platform
                liked, synced_at, created_at, updated_at, UNIQUE(platform, platform_track_id))
 lyrics_cache(platform, platform_track_id, original, translated, ...)
 meta(key, value)
+merge_log(id, source_song_id, target_song_id, source_payload, source_links, note, merged_at)
 ```
 
 - `canonical_key` 上**仅索引**,**不 UNIQUE** — 保留同名异版(如 `Tell me` 在 Prover 和 eyes 是两首)。
@@ -115,10 +116,23 @@ $env:FORCE_FULL_SYNC="true"; python scripts/sync.py
 ```powershell
 python tests/test_db.py
 python tests/test_matcher.py
+python tests/test_merge.py
 python tests/test_migrate.py
 python tests/test_sync_plan.py
 python tests/test_netease_api_http.py   # 需先启动 Node.js 服务
 ```
+
+### 手工合并重复歌曲
+
+当同一首歌在数据库中存在多条记录时,可通过 Web UI 进行合并:
+
+```powershell
+# 启动手工匹配/合并界面
+python scripts/manual_match.py
+# 浏览器打开 http://localhost:5000
+```
+
+合并操作会将源歌曲的平台链接转移到目标歌曲,源歌曲被软删除(`deleted_at`),合并记录写入 `merge_log` 审计表。
 
 ### 数据迁移与诊断
 
@@ -142,6 +156,7 @@ MusicSync/
 │   ├── sync.py                          # 主入口,10-step 流水线
 │   ├── db.py                            # SQLite schema + 助手
 │   ├── matcher.py                       # L0/L1/L2/L3 匹配引擎
+│   ├── merge.py                         # 歌曲合并(propose_merge + execute_merge)
 │   ├── netease_api.py                   # NetEase HTTP 客户端
 │   ├── qqmusic_api_v2.py                # QQ 音乐异步客户端
 │   ├── auth_manager.py                  # 双平台认证
