@@ -216,6 +216,17 @@ def l0_canonicalize(
         primary = pick_primary_song(conn, candidates)
         song_id = primary["id"]
 
+    # Guard: skip if this song already has a liked=1 link on this platform.
+    # Prevents 1v2 duplicates (e.g. same NE song linked to two QQ tracks).
+    existing_liked = conn.execute(
+        "SELECT id FROM platform_links "
+        "WHERE song_id=? AND platform=? AND liked=1 AND platform_track_id!=?",
+        (song_id, platform, tid),
+    ).fetchone()
+    if existing_liked is not None:
+        # Song already has a different liked track on this platform — skip
+        return song_id, existing_liked["id"]
+
     link_id = upsert_platform_link(
         conn,
         song_id=song_id,

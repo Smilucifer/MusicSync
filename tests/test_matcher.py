@@ -331,6 +331,58 @@ def test_l0_canonicalize_revives_unliked_song():
         os.unlink(db)
 
 
+def test_l0_canonicalize_skips_duplicate_liked_on_same_platform():
+    """Song already has liked=1 on platform → new track with same canonical_key must NOT create second liked=1."""
+    db = _temp_db()
+    try:
+        init_db(db)
+        with connect(db) as conn:
+            sid = upsert_song(conn, canonical_key="test|artist", name="Test",
+                              artist="Artist", album="A", match_source="manual")
+            upsert_platform_link(conn, song_id=sid, platform="qq",
+                                 platform_track_id="qq1", liked=1)
+        # New QQ track with same canonical_key should be skipped
+        with connect(db) as conn:
+            song_id, link_id = l0_canonicalize(
+                conn, platform="qq",
+                track={"id": "qq_new", "name": "Test", "artist": "Artist", "album": "A"})
+        with connect(db) as conn:
+            qq_links = conn.execute(
+                "SELECT * FROM platform_links WHERE song_id=? AND platform='qq' AND liked=1",
+                (sid,)
+            ).fetchall()
+        assert len(qq_links) == 1, f"expected 1 liked QQ link, got {len(qq_links)}"
+        assert qq_links[0]["platform_track_id"] == "qq1", "original link should be kept"
+        assert link_id == qq_links[0]["id"], "should return existing link id"
+    finally:
+        os.unlink(db)
+
+
+def test_l0_canonicalize_new_track_when_no_liked_on_platform():
+    """Song has liked=0 on platform → new track should create a new liked=1 link."""
+    db = _temp_db()
+    try:
+        init_db(db)
+        with connect(db) as conn:
+            sid = upsert_song(conn, canonical_key="test|artist", name="Test",
+                              artist="Artist", album="A", match_source="manual")
+            upsert_platform_link(conn, song_id=sid, platform="qq",
+                                 platform_track_id="qq_old", liked=0)
+        with connect(db) as conn:
+            song_id, link_id = l0_canonicalize(
+                conn, platform="qq",
+                track={"id": "qq_new", "name": "Test", "artist": "Artist", "album": "A"})
+        with connect(db) as conn:
+            qq_links = conn.execute(
+                "SELECT * FROM platform_links WHERE song_id=? AND platform='qq' AND liked=1",
+                (sid,)
+            ).fetchall()
+        assert len(qq_links) == 1, f"expected 1 liked QQ link, got {len(qq_links)}"
+        assert qq_links[0]["platform_track_id"] == "qq_new", "new link should be created"
+    finally:
+        os.unlink(db)
+
+
 if __name__ == "__main__":
     test_primary_rule_1_prefers_manual()
     test_primary_rule_2_prefers_synced_link()
@@ -350,4 +402,6 @@ if __name__ == "__main__":
     test_find_dispatches_to_l2()
     test_l1_exact_isrc_match()
     test_l0_canonicalize_revives_unliked_song()
+    test_l0_canonicalize_skips_duplicate_liked_on_same_platform()
+    test_l0_canonicalize_new_track_when_no_liked_on_platform()
     print("ALL OK")
