@@ -1,8 +1,8 @@
 name: MusicSync
 
 on:
-  schedule:
-    - cron: '0 16,4 * * *'  # CST 0:00 and 12:00 (UTC 16:00 and 04:00)
+  # schedule:
+  #   - cron: '0 16,4 * * *'  # CST 0:00 and 12:00 (UTC 16:00 and 04:00)
   workflow_dispatch:
     inputs:
       dry_run:
