@@ -100,41 +100,60 @@ def diff_vs_db(
     ne_seen: set[str],
     qq_seen: set[str],
 ) -> dict:
-    """Return two lists keyed by category:
+    """Return three lists keyed by category:
        single_side_songs: list of (song_id, present_platform, other_platform)
-       user_unliked_links: list of (link_id, platform, platform_track_id)
+       user_unliked_links: list of (link_id, platform, platform_track_id) — API-calling unlikes
+       local_only_unlikes: list of (link_id, platform, platform_track_id) — local DB only
     """
     single_side: list[tuple] = []
     unliked: list[tuple] = []
+    local_only_unlikes: list[tuple] = []
 
-    cur = conn.execute("SELECT id FROM songs ORDER BY id")
+    cur = conn.execute(
+        "SELECT id FROM songs WHERE deleted_at IS NULL ORDER BY id"
+    )
     for srow in cur.fetchall():
         sid = srow["id"]
         links = get_links_for_song(conn, sid)
         link_by_plat = {ll["platform"]: ll for ll in links if ll["liked"] == 1}
-        if "netease" in link_by_plat and "qq" in link_by_plat:
-            ne_link = link_by_plat["netease"]
-            qq_link = link_by_plat["qq"]
-            ne_present = ne_link["platform_track_id"] in ne_seen
-            qq_present = qq_link["platform_track_id"] in qq_seen
+        ne_link = link_by_plat.get("netease")
+        qq_link = link_by_plat.get("qq")
+        ne_present = ne_link and ne_link["platform_track_id"] in ne_seen
+        qq_present = qq_link and qq_link["platform_track_id"] in qq_seen
+
+        if ne_link and qq_link:
+            # 双侧 link: 对称传播 (不再看 synced_at)
             if ne_present and qq_present:
-                pass  # healthy — no action
+                pass  # healthy
             elif ne_present and not qq_present:
                 unliked.append((qq_link["id"], "qq", qq_link["platform_track_id"]))
-                # 反向：用户 unlike QQ → 也要 unlike Ne
                 unliked.append((ne_link["id"], "netease", ne_link["platform_track_id"]))
             elif qq_present and not ne_present:
                 unliked.append((ne_link["id"], "netease", ne_link["platform_track_id"]))
                 unliked.append((qq_link["id"], "qq", qq_link["platform_track_id"]))
             else:
-                # 都不在了：用户两侧 unlike
+                # Both gone
                 unliked.append((ne_link["id"], "netease", ne_link["platform_track_id"]))
                 unliked.append((qq_link["id"], "qq", qq_link["platform_track_id"]))
-        elif "netease" in link_by_plat:
-            single_side.append((sid, "netease", "qq"))
-        elif "qq" in link_by_plat:
-            single_side.append((sid, "qq", "netease"))
-    return {"single_side": single_side, "unliked": unliked}
+        elif ne_link:
+            if ne_present:
+                single_side.append((sid, "netease", "qq"))
+            else:
+                local_only_unlikes.append(
+                    (ne_link["id"], "netease", ne_link["platform_track_id"])
+                )
+        elif qq_link:
+            if qq_present:
+                single_side.append((sid, "qq", "netease"))
+            else:
+                local_only_unlikes.append(
+                    (qq_link["id"], "qq", qq_link["platform_track_id"])
+                )
+    return {
+        "single_side": single_side,
+        "unliked": unliked,
+        "local_only_unlikes": local_only_unlikes,
+    }
 
 
 def _fetch_lyrics_cached(conn, api, platform: str, tid: str) -> tuple[str, str]:
@@ -264,8 +283,16 @@ def match_unlinked(
     return results
 
 
-def build_plan(conn: sqlite3.Connection, unliked: list[tuple]) -> dict:
-    """Step 6: convert match results + unliked diff into action lists."""
+def build_plan(
+    conn: sqlite3.Connection,
+    unliked: list[tuple],
+    local_only_ids: set[int] | None = None,
+) -> dict:
+    """Step 6: convert match results + unliked diff into action lists.
+
+    local_only_ids: link IDs already handled by local_only_unlikes —
+    exclude them from the ADD query so they aren't re-added.
+    """
     add_ne: list[str] = []
     add_qq: list[str] = []
     unlike_ne: list[str] = []
@@ -275,7 +302,10 @@ def build_plan(conn: sqlite3.Connection, unliked: list[tuple]) -> dict:
         "SELECT id, song_id, platform, platform_track_id FROM platform_links "
         "WHERE liked=0 AND synced_at IS NULL"
     )
+    skip_ids = local_only_ids or set()
     for r in cur.fetchall():
+        if r["id"] in skip_ids:
+            continue
         if r["platform"] == "netease":
             add_ne.append(r["platform_track_id"])
         else:
@@ -367,7 +397,7 @@ def dump_snapshot(conn: sqlite3.Connection, path: Path) -> int:
     rows = []
     cur = conn.execute(
         "SELECT s.id AS song_id, s.canonical_key, s.name, s.artist, s.album, s.match_source "
-        "FROM songs s ORDER BY s.id"
+        "FROM songs s WHERE s.deleted_at IS NULL ORDER BY s.id"
     )
     for s in cur.fetchall():
         links = {ll["platform"]: ll for ll in get_links_for_song(conn, s["song_id"])}
@@ -442,17 +472,32 @@ def run_pipeline(
         )
         summary["match_results"] = match_results
 
+        # Step 4.5: handle local_only_unlikes
+        local_unlikes = diff["local_only_unlikes"]
+        summary["local_only_unlikes"] = len(local_unlikes)
+        print(f"Local-only unlikes detected: {len(local_unlikes)} "
+              f"(platform-side already unliked, no API call needed)")
+
+        if not dry_run:
+            ts = now_iso()
+            for link_id, _platform, _tid in local_unlikes:
+                conn.execute(
+                    "UPDATE platform_links SET liked=0, updated_at=? WHERE id=?",
+                    (ts, link_id),
+                )
+            conn.commit()
+
         # Step 6: plan
-        plan = build_plan(conn, diff["unliked"])
+        local_only_link_ids = {lid for lid, _p, _t in local_unlikes}
+        plan = build_plan(conn, diff["unliked"],
+                          local_only_ids=local_only_link_ids)
         summary["plan"] = plan
         print(f"Plan: ADD_NE={len(plan['add_ne'])} ADD_QQ={len(plan['add_qq'])} "
               f"UNLIKE_NE={len(plan['unlike_ne'])} UNLIKE_QQ={len(plan['unlike_qq'])}")
 
-        # Compute cleanup_skipped early so dry-run with force_full_sync still reports it
+        # Compute cleanup_skipped early so dry-run reports it
         unlike_count = len(plan["unlike_ne"]) + len(plan["unlike_qq"])
-        if _force_full_sync:
-            summary["cleanup_skipped"] = True
-        elif unlike_count > UNLIKE_ABORT_THRESHOLD:
+        if unlike_count > UNLIKE_ABORT_THRESHOLD:
             summary["cleanup_skipped"] = True
 
         if dry_run:

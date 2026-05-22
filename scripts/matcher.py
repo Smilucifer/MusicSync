@@ -193,7 +193,7 @@ def l0_canonicalize(
             platform_name=name,
             platform_artist=artist,
             platform_album=album or "",
-            liked=1,
+            liked=1,  # fetch presence = liked=1 is ground truth
         )
         return existing["song_id"], link_id
 

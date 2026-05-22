@@ -309,6 +309,28 @@ def test_l1_exact_isrc_match():
     assert match_l1({"isrc": "a"}, {"isrc": "b"}) is False
 
 
+def test_l0_canonicalize_revives_unliked_song():
+    """A track with liked=0 in DB that appears in fetch → liked must be set to 1."""
+    db = _temp_db()
+    try:
+        init_db(db)
+        with connect(db) as conn:
+            sid = upsert_song(conn, canonical_key="x|y", name="X", artist="Y",
+                              album="A", match_source="manual")
+            upsert_platform_link(conn, song_id=sid, platform="netease",
+                                 platform_track_id="ne1", liked=0)
+        with connect(db) as conn:
+            l0_canonicalize(conn, platform="netease",
+                            track={"id": "ne1", "name": "X", "artist": "Y", "album": "A"})
+        with connect(db) as conn:
+            link = conn.execute(
+                "SELECT * FROM platform_links WHERE platform='netease' AND platform_track_id='ne1'"
+            ).fetchone()
+        assert link["liked"] == 1, f"expected liked=1, got {link['liked']}"
+    finally:
+        os.unlink(db)
+
+
 if __name__ == "__main__":
     test_primary_rule_1_prefers_manual()
     test_primary_rule_2_prefers_synced_link()
@@ -327,4 +349,5 @@ if __name__ == "__main__":
     test_find_dispatches_to_l1()
     test_find_dispatches_to_l2()
     test_l1_exact_isrc_match()
+    test_l0_canonicalize_revives_unliked_song()
     print("ALL OK")

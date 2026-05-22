@@ -140,9 +140,9 @@ def test_unlike_safety_gate_skips_cleanup_when_over_threshold():
                 sid = upsert_song(conn, canonical_key=f"s{i}|x", name=f"S{i}",
                                   artist="x", album=None, match_source="manual")
                 upsert_platform_link(conn, song_id=sid, platform="netease",
-                                     platform_track_id=f"n{i}", liked=1)
+                                     platform_track_id=f"n{i}", liked=1, synced_at=None)
                 upsert_platform_link(conn, song_id=sid, platform="qq",
-                                     platform_track_id=f"q{i}", liked=1)
+                                     platform_track_id=f"q{i}", liked=1, synced_at=None)
             set_meta(conn, "last_sync_at", "2026-05-20T00:00:00+00:00")
         # fetch 全空 → 15 个 unlike_ne + 15 个 unlike_qq = 30，远超阈值 10
         # 但因 fetch sanity 优先 abort，需要绕过 sanity：设大量歌但 fetch 比 DB 少不到 15%
@@ -189,7 +189,6 @@ def test_match_unlinked_and_execute_creates_add_action():
             snapshot_path=snap,
         )
         assert "qq_new" in qq.adds, f"expected qq_new in qq.adds, got {qq.adds}"
-        assert result.get("cleanup_skipped") is True
     finally:
         os.unlink(db)
         if os.path.exists(snap):
@@ -253,12 +252,151 @@ def test_netease_3_strike_aborts_match_unlinked():
             os.unlink(snap)
 
 
+def test_diff_vs_db_two_sided_unsynced_propagation():
+    """双侧 liked=1 / synced_at=NULL, only NE in fetch → unliked should contain both sides."""
+    fd, db = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        init_db(db)
+        with connect(db) as conn:
+            sid = upsert_song(conn, canonical_key="x|y", name="X",
+                              artist="y", album=None, match_source="manual")
+            upsert_platform_link(conn, song_id=sid, platform="netease",
+                                 platform_track_id="ne1", liked=1, synced_at=None)
+            upsert_platform_link(conn, song_id=sid, platform="qq",
+                                 platform_track_id="qq1", liked=1, synced_at=None)
+            set_meta(conn, "last_sync_at", "2026-05-20T00:00:00+00:00")
+        ne = FakeAPI([{"id": "ne1", "name": "X", "artist": "y", "album": ""}])
+        qq = FakeAPI([])  # QQ fetch empty
+        result = sync.run_pipeline(ne, qq, db_path=db, dry_run=True, force_full_sync=True)
+        tid_ne = result["plan"]["unlike_ne"]
+        tid_qq = result["plan"]["unlike_qq"]
+        assert "ne1" in tid_ne, f"ne1 should be in unlike_ne, got {tid_ne}"
+        assert "qq1" in tid_qq, f"qq1 should be in unlike_qq, got {tid_qq}"
+        assert result.get("local_only_unlikes", 0) == 0
+    finally:
+        os.unlink(db)
+
+
+def test_diff_vs_db_one_sided_platform_unliked():
+    """Only NE link / NE fetch missing this track → local_only_unlikes, not unliked."""
+    fd, db = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        init_db(db)
+        with connect(db) as conn:
+            sid = upsert_song(conn, canonical_key="x|y", name="X",
+                              artist="y", album=None, match_source="manual")
+            upsert_platform_link(conn, song_id=sid, platform="netease",
+                                 platform_track_id="ne1", liked=1)
+            set_meta(conn, "last_sync_at", "2026-05-20T00:00:00+00:00")
+        ne = FakeAPI([])  # ne1 not in fetch
+        qq = FakeAPI([])
+        result = sync.run_pipeline(ne, qq, db_path=db, dry_run=True, force_full_sync=True)
+        assert len(result["plan"]["unlike_ne"]) == 0, "should not be in API-calling unlike"
+        assert len(result["plan"]["unlike_qq"]) == 0
+        assert result.get("local_only_unlikes", 0) == 1
+    finally:
+        os.unlink(db)
+
+
+def test_run_pipeline_local_only_unlikes_dryrun_no_write():
+    """dry_run=True: local_only_unlikes detected but NOT written to DB."""
+    fd, db = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        init_db(db)
+        with connect(db) as conn:
+            sid = upsert_song(conn, canonical_key="x|y", name="X",
+                              artist="y", album=None, match_source="manual")
+            upsert_platform_link(conn, song_id=sid, platform="netease",
+                                 platform_track_id="ne1", liked=1)
+            set_meta(conn, "last_sync_at", "2026-05-20T00:00:00+00:00")
+        ne = FakeAPI([])
+        qq = FakeAPI([])
+        result = sync.run_pipeline(ne, qq, db_path=db, dry_run=True, force_full_sync=True)
+        assert result.get("local_only_unlikes", 0) == 1
+        # DB should NOT have been updated
+        with connect(db) as conn:
+            link = conn.execute(
+                "SELECT * FROM platform_links WHERE platform_track_id='ne1'"
+            ).fetchone()
+            assert link["liked"] == 1, "dry_run should not write local_only_unlikes"
+    finally:
+        os.unlink(db)
+
+
+def test_run_pipeline_local_only_unlikes_real_run_writes():
+    """dry_run=False: local_only_unlikes written (liked → 0)."""
+    fd, db = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        init_db(db)
+        with connect(db) as conn:
+            sid = upsert_song(conn, canonical_key="x|y", name="X",
+                              artist="y", album=None, match_source="manual")
+            upsert_platform_link(conn, song_id=sid, platform="netease",
+                                 platform_track_id="ne1", liked=1)
+            set_meta(conn, "last_sync_at", "2026-05-20T00:00:00+00:00")
+        ne = FakeAPI([])
+        qq = FakeAPI([])
+        result = sync.run_pipeline(ne, qq, db_path=db, dry_run=False, force_full_sync=True)
+        assert result.get("local_only_unlikes", 0) == 1
+        with connect(db) as conn:
+            link = conn.execute(
+                "SELECT * FROM platform_links WHERE platform_track_id='ne1'"
+            ).fetchone()
+            assert link["liked"] == 0, "real run should set liked=0"
+    finally:
+        os.unlink(db)
+
+
+def test_local_only_unlikes_not_counted_in_unlike_threshold():
+    """20 single-side unlikes + 1 double-side unlike → cleanup executes (20 not in threshold)."""
+    fd, db = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        init_db(db)
+        with connect(db) as conn:
+            # 20 songs: NE only, NE not in fetch → local_only_unlikes
+            for i in range(20):
+                sid = upsert_song(conn, canonical_key=f"s{i}|x", name=f"S{i}",
+                                  artist="x", album=None, match_source="manual")
+                upsert_platform_link(conn, song_id=sid, platform="netease",
+                                     platform_track_id=f"n{i}", liked=1)
+            # 1 song: dual-side, both missing → unliked
+            sid_dual = upsert_song(conn, canonical_key="dual|x", name="Dual",
+                                   artist="x", album=None, match_source="manual")
+            upsert_platform_link(conn, song_id=sid_dual, platform="netease",
+                                 platform_track_id="n_dual", liked=1)
+            upsert_platform_link(conn, song_id=sid_dual, platform="qq",
+                                 platform_track_id="q_dual", liked=1)
+            set_meta(conn, "last_sync_at", "2026-05-20T00:00:00+00:00")
+        ne = FakeAPI([])
+        qq = FakeAPI([])
+        result = sync.run_pipeline(ne, qq, db_path=db, dry_run=True, force_full_sync=True)
+        # 1 dual-side unlike in plan (2 entries: ne + qq)
+        unlike_total = len(result["plan"]["unlike_ne"]) + len(result["plan"]["unlike_qq"])
+        assert unlike_total == 2, f"expected 2 unlike entries, got {unlike_total}"
+        # 20 local-only unlikes
+        assert result.get("local_only_unlikes", 0) == 20
+        # cleanup should NOT be skipped (2 < threshold 10)
+        assert result.get("cleanup_skipped") is not True
+    finally:
+        os.unlink(db)
+
+
 if __name__ == "__main__":
     test_plan_steady_state_yields_nothing()
     test_plan_unlike_detected_when_track_missing()
     test_fetch_sanity_check_aborts_on_large_drop()
     test_fetch_sanity_skipped_on_first_run()
     test_unlike_safety_gate_skips_cleanup_when_over_threshold()
-    test_match_unlinked_and_execute_creates_add_action()  # NEW
+    test_match_unlinked_and_execute_creates_add_action()
     test_netease_3_strike_aborts_match_unlinked()
+    test_diff_vs_db_two_sided_unsynced_propagation()
+    test_diff_vs_db_one_sided_platform_unliked()
+    test_run_pipeline_local_only_unlikes_dryrun_no_write()
+    test_run_pipeline_local_only_unlikes_real_run_writes()
+    test_local_only_unlikes_not_counted_in_unlike_threshold()
     print("ALL OK")
